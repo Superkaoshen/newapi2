@@ -74,6 +74,13 @@ func InitOptionMap() {
 	common.OptionMap["WorkerUrl"] = system_setting.WorkerUrl
 	common.OptionMap["WorkerValidKey"] = system_setting.WorkerValidKey
 	common.OptionMap["WorkerAllowHttpImageRequestEnabled"] = strconv.FormatBool(system_setting.WorkerAllowHttpImageRequestEnabled)
+	common.OptionMap["AliyunOssEnabled"] = "false"
+	common.OptionMap["AliyunOssEndpoint"] = ""
+	common.OptionMap["AliyunOssBucket"] = ""
+	common.OptionMap["AliyunOssAccessKeyId"] = ""
+	common.OptionMap["AliyunOssAccessKeySecret"] = ""
+	common.OptionMap["AliyunOssPathPrefix"] = "openai-images"
+	common.OptionMap["AliyunOssPublicBaseUrl"] = ""
 	common.OptionMap["PayAddress"] = ""
 	common.OptionMap["CustomCallbackAddress"] = ""
 	common.OptionMap["EpayId"] = ""
@@ -354,6 +361,8 @@ func updateOptionMap(key string, value string) (err error) {
 			common.SMTPForceAuthLogin = boolValue
 		case "WorkerAllowHttpImageRequestEnabled":
 			system_setting.WorkerAllowHttpImageRequestEnabled = boolValue
+		case "AliyunOssEnabled":
+			// AliyunOssEnabled 仅通过 OptionMap 生效，无单独内存变量
 		case "DefaultUseAutoGroup":
 			setting.DefaultUseAutoGroup = boolValue
 		case "ExposeRatioEnabled":

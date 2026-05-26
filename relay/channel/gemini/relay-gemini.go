@@ -1061,6 +1061,20 @@ func buildUsageFromGeminiMetadata(metadata dto.GeminiUsageMetadata, fallbackProm
 	return usage
 }
 
+func geminiInlineImageMarkdown(part *dto.GeminiPart) string {
+	if part == nil || part.InlineData == nil {
+		return ""
+	}
+	imageURL, err := service.SaveBase64ImageToAliyunOSS(part.InlineData.Data, part.InlineData.MimeType)
+	if err != nil {
+		common.SysError(fmt.Sprintf("failed to save gemini inline image to aliyun oss: %s", err.Error()))
+	}
+	if imageURL == "" {
+		imageURL = "data:" + part.InlineData.MimeType + ";base64," + part.InlineData.Data
+	}
+	return "![image](" + imageURL + ")"
+}
+
 func responseGeminiChat2OpenAI(c *gin.Context, response *dto.GeminiChatResponse) *dto.OpenAITextResponse {
 	fullTextResponse := dto.OpenAITextResponse{
 		Id:      helper.GetResponseID(c),
@@ -1107,11 +1121,7 @@ func responseGeminiChat2OpenAI(c *gin.Context, response *dto.GeminiChatResponse)
 					// 媒体内容
 					if strings.HasPrefix(part.InlineData.MimeType, "image") {
 						writeSep()
-						content.WriteString("![image](data:")
-						content.WriteString(part.InlineData.MimeType)
-						content.WriteString(";base64,")
-						content.WriteString(part.InlineData.Data)
-						content.WriteByte(')')
+						content.WriteString(geminiInlineImageMarkdown(&part))
 					} else {
 						// 其他媒体类型，直接显示链接
 						writeSep()
@@ -1265,11 +1275,7 @@ func streamResponseGeminiChat2OpenAI(geminiResponse *dto.GeminiChatResponse) (*d
 			if part.InlineData != nil {
 				if strings.HasPrefix(part.InlineData.MimeType, "image") {
 					writeSep()
-					content.WriteString("![image](data:")
-					content.WriteString(part.InlineData.MimeType)
-					content.WriteString(";base64,")
-					content.WriteString(part.InlineData.Data)
-					content.WriteByte(')')
+					content.WriteString(geminiInlineImageMarkdown(&part))
 				}
 			} else if part.FunctionCall != nil {
 				isTools = true
