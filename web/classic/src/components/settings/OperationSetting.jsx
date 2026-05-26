@@ -27,6 +27,7 @@ import SettingsLog from '../../pages/Setting/Operation/SettingsLog';
 import SettingsMonitoring from '../../pages/Setting/Operation/SettingsMonitoring';
 import SettingsCreditLimit from '../../pages/Setting/Operation/SettingsCreditLimit';
 import SettingsCheckin from '../../pages/Setting/Operation/SettingsCheckin';
+import SettingsAliyunOss from '../../pages/Setting/Operation/SettingsAliyunOss';
 import { API, showError, toBoolean } from '../../helpers';
 
 const OperationSetting = () => {
@@ -74,7 +75,18 @@ const OperationSetting = () => {
     AutomaticRetryStatusCodes:
       '100-199,300-399,401-407,409-499,500-503,505-523,525-599',
     'monitor_setting.auto_test_channel_enabled': false,
-    'monitor_setting.auto_test_channel_minutes': 10 /* 签到设置 */,
+    'monitor_setting.auto_test_channel_minutes': 10,
+
+    /* 阿里云 OSS 设置 */
+    AliyunOssEnabled: false,
+    AliyunOssEndpoint: '',
+    AliyunOssBucket: '',
+    AliyunOssAccessKeyId: '',
+    AliyunOssAccessKeySecret: '',
+    AliyunOssPathPrefix: '',
+    AliyunOssPublicBaseUrl: '',
+
+    /* 签到设置 */
     'checkin_setting.enabled': false,
     'checkin_setting.min_quota': 1000,
     'checkin_setting.max_quota': 10000,
@@ -145,6 +157,10 @@ const OperationSetting = () => {
         {/* 监控设置 */}
         <Card style={{ marginTop: '10px' }}>
           <SettingsMonitoring options={inputs} refresh={onRefresh} />
+        </Card>
+        {/* 阿里云 OSS 设置 */}
+        <Card style={{ marginTop: '10px' }}>
+          <SettingsAliyunOss options={inputs} refresh={onRefresh} />
         </Card>
         {/* 额度设置 */}
         <Card style={{ marginTop: '10px' }}>
