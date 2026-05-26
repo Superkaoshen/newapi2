@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { SystemBehaviorSection } from '../general/system-behavior-section'
 import { EmailSettingsSection } from '../integrations/email-settings-section'
 import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
+import { AliyunOssSettingsSection } from '../integrations/aliyun-oss-settings-section'
 import { WorkerSettingsSection } from '../integrations/worker-settings-section'
 import { LogSettingsSection } from '../maintenance/log-settings-section'
 import { PerformanceSection } from '../maintenance/performance-section'
@@ -76,6 +77,23 @@ const OPERATIONS_SECTIONS = [
           SMTPToken: settings.SMTPToken,
           SMTPSSLEnabled: settings.SMTPSSLEnabled,
           SMTPForceAuthLogin: settings.SMTPForceAuthLogin,
+        }}
+      />
+    ),
+  },
+  {
+    id: 'aliyun-oss',
+    titleKey: 'Aliyun OSS',
+    build: (settings: OperationsSettings) => (
+      <AliyunOssSettingsSection
+        defaultValues={{
+          AliyunOssEnabled: settings.AliyunOssEnabled ?? false,
+          AliyunOssEndpoint: settings.AliyunOssEndpoint ?? '',
+          AliyunOssBucket: settings.AliyunOssBucket ?? '',
+          AliyunOssAccessKeyId: settings.AliyunOssAccessKeyId ?? '',
+          AliyunOssAccessKeySecret: settings.AliyunOssAccessKeySecret ?? '',
+          AliyunOssPathPrefix: settings.AliyunOssPathPrefix ?? '',
+          AliyunOssPublicBaseUrl: settings.AliyunOssPublicBaseUrl ?? '',
         }}
       />
     ),
