@@ -91,7 +91,6 @@ export function AliyunOssSettingsSection({
       { key: 'AliyunOssEndpoint', sanitize: removeTrailingSlash },
       { key: 'AliyunOssBucket' },
       { key: 'AliyunOssAccessKeyId' },
-      { key: 'AliyunOssAccessKeySecret' },
       { key: 'AliyunOssPathPrefix' },
       { key: 'AliyunOssPublicBaseUrl', sanitize: removeTrailingSlash },
     ]
@@ -103,6 +102,11 @@ export function AliyunOssSettingsSection({
       if (sanitizedValue !== initialValue) {
         updates.push({ key: key as string, value: sanitizedValue })
       }
+    }
+
+    const secretValue = values.AliyunOssAccessKeySecret.trim()
+    if (secretValue) {
+      updates.push({ key: 'AliyunOssAccessKeySecret', value: secretValue })
     }
 
     for (const update of updates) {
@@ -231,7 +235,7 @@ export function AliyunOssSettingsSection({
                     <FormControl>
                       <Input
                         type='password'
-                        placeholder={t('Enter secret key')}
+                        placeholder={t('Enter new key to update')}
                         autoComplete='new-password'
                         {...field}
                         onChange={(event) =>
@@ -240,7 +244,7 @@ export function AliyunOssSettingsSection({
                       />
                     </FormControl>
                     <FormDescription>
-                      {t('Alibaba Cloud AccessKey Secret.')}
+                      {t('Leave blank to keep the existing key')}
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
