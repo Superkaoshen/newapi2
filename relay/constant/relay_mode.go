@@ -43,6 +43,9 @@ const (
 	RelayModeVideoFetchByID
 	RelayModeVideoSubmit
 
+	RelayModeAsyncImageFetchByID
+	RelayModeAsyncImageSubmit
+
 	RelayModeRerank
 
 	RelayModeResponses
@@ -84,6 +87,10 @@ func Path2RelayMode(path string) int {
 		relayMode = RelayModeAudioTranslation
 	} else if strings.HasPrefix(path, "/v1/rerank") {
 		relayMode = RelayModeRerank
+	} else if strings.HasPrefix(path, "/v1/api/generate") {
+		relayMode = RelayModeAsyncImageSubmit
+	} else if strings.HasPrefix(path, "/v1/api/result") {
+		relayMode = RelayModeAsyncImageFetchByID
 	} else if strings.HasPrefix(path, "/v1/realtime") {
 		relayMode = RelayModeRealtime
 	} else if strings.HasPrefix(path, "/v1beta/models") || strings.HasPrefix(path, "/v1/models") {

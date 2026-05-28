@@ -16,8 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useRef, useEffect, useCallback } from 'react'
+import { useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import { HERO_STAT_ITEMS } from '../../constants'
 
 interface CounterProps {
   end: number
@@ -33,8 +34,8 @@ function Counter(props: CounterProps) {
   const startedRef = useRef(false)
 
   const formatValue = useCallback(
-    (v: number) =>
-      decimals > 0 ? v.toFixed(decimals) : Math.round(v).toLocaleString(),
+    (value: number) =>
+      decimals > 0 ? value.toFixed(decimals) : Math.round(value).toLocaleString(),
     [decimals]
   )
 
@@ -49,7 +50,7 @@ function Counter(props: CounterProps) {
       if (progress < 1) requestAnimationFrame(step)
     }
     requestAnimationFrame(step)
-  }, [end, duration, prefix, suffix, formatValue])
+  }, [duration, end, formatValue, prefix, suffix])
 
   useEffect(() => {
     const el = ref.current
@@ -74,7 +75,7 @@ function Counter(props: CounterProps) {
 
     observer.observe(el)
     return () => observer.disconnect()
-  }, [animate, end, prefix, suffix, formatValue])
+  }, [animate, end, formatValue, prefix, suffix])
 
   return (
     <span ref={ref} className='tabular-nums'>
@@ -83,41 +84,28 @@ function Counter(props: CounterProps) {
   )
 }
 
-interface StatsProps {
-  className?: string
-}
-
-interface StatItem {
-  end: number
-  suffix: string
-  label: string
-  decimals?: number
-}
-
-export function Stats(_props: StatsProps) {
+export function Stats() {
   const { t } = useTranslation()
-
-  const stats: StatItem[] = [
-    { end: 50, suffix: '+', label: t('upstream services integrated') },
-    { end: 100, suffix: '+', label: t('model billing support') },
-    { end: 50, suffix: '+', label: t('compatible API routes') },
-    { end: 10, suffix: '+', label: t('scheduling controls') },
-  ]
 
   return (
     <div className='border-border/40 bg-muted/10 relative z-10 border-y'>
       <div className='mx-auto max-w-6xl px-6 py-10 md:py-12'>
-        <div className='grid grid-cols-2 gap-8 md:grid-cols-4 md:gap-12'>
-          {stats.map((s) => (
-            <div
-              key={s.label}
-              className='flex flex-col items-center text-center'
-            >
+        <div className='grid grid-cols-1 gap-6 md:grid-cols-3 md:gap-8'>
+          {HERO_STAT_ITEMS.map((stat) => (
+            <div key={stat.label} className='flex flex-col items-center text-center'>
               <span className='text-2xl font-bold tracking-tight md:text-3xl'>
-                <Counter end={s.end} suffix={s.suffix} decimals={s.decimals} />
+                {typeof stat.value === 'number' ? (
+                  <Counter
+                    end={stat.value}
+                    suffix={stat.suffix}
+                    decimals={'decimals' in stat ? stat.decimals : undefined}
+                  />
+                ) : (
+                  stat.value
+                )}
               </span>
               <span className='text-muted-foreground mt-1.5 text-xs'>
-                {s.label}
+                {t(stat.label)}
               </span>
             </div>
           ))}

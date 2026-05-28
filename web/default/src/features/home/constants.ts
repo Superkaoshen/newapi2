@@ -17,119 +17,154 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * Home page constants
- * All hardcoded data for home page sections
+ * Home page constants for Tuyao API landing page
  */
 import { type TFunction } from 'i18next'
 
-// Layout - Main base classes
 export const MAIN_BASE_CLASSES = 'bg-background text-foreground w-full'
 
-// Hero section - AI Applications (Left side)
-export const AI_APPLICATIONS = [
-  'LobeHub.Color',
-  'Dify.Color',
-  'OpenWebUI',
-  'Cline',
+export const HERO_STAT_ITEMS = [
+  {
+    value: 99.9,
+    suffix: '%',
+    label: 'Online processing availability',
+    decimals: 1,
+  },
+  { value: 3, suffix: 's', label: 'Average print extraction preview' },
+  { value: '24/7', label: 'API access for production workflows' },
 ] as const
 
-// Hero section - AI Models (Right side)
-export const AI_MODELS = [
-  'Qwen.Color',
-  'DeepSeek.Color',
-  'Doubao.Color',
-  'OpenAI',
-  'Claude.Color',
-  'Gemini.Color',
+export const FEATURE_CARDS = [
+  {
+    title: 'AI print extraction',
+    description:
+      'Upload design references and extract repeatable print elements from source images.',
+    iconName: 'ScanSearch',
+  },
+  {
+    title: 'Template matching',
+    description:
+      'Detect pattern structure, borders, and layout details for accurate print replication.',
+    iconName: 'Layers3',
+  },
+  {
+    title: 'Batch processing',
+    description:
+      'Handle multiple assets in a single flow for studios, factories, and e-commerce teams.',
+    iconName: 'Files',
+  },
+  {
+    title: 'API integration',
+    description:
+      'Connect extraction results to your product pipeline with a clean API-first workflow.',
+    iconName: 'Code2',
+  },
 ] as const
 
-// Hero section - Gateway Features
-export const GATEWAY_FEATURES = [
-  'Cost Tracking',
-  'Model Access',
-  'Guardrails',
-  'Observability',
-  'Budgets',
-  'Load Balancing',
-  'Rate Limiting',
-  'Token Mgmt',
-  'Prompt Caching',
-  'Pass-Through',
+export const WORKFLOW_STEPS = [
+  {
+    title: 'Upload source artwork',
+    description:
+      'Submit print references, fabric photos, sketches, or sample images.',
+  },
+  {
+    title: 'AI extracts print layers',
+    description:
+      'Separate pattern, contour, color blocks, and repeatable design elements.',
+  },
+  {
+    title: 'Export and integrate',
+    description:
+      'Receive structured output for review, production, or downstream API use.',
+  },
 ] as const
 
-// Stats section - Default statistics
+export const USE_CASES = [
+  'Fashion print production',
+  'Custom merchandise design',
+  'Pattern library management',
+  'Print asset automation',
+] as const
+
+export const BENEFIT_ITEMS = [
+  'Fast preview for print extraction',
+  'Consistent layout recognition',
+  'Built for production workflows',
+  'Easy API integration for teams',
+] as const
+
 export const DEFAULT_STATS = [
   {
-    value: '50',
+    value: '3',
     suffix: '+',
-    description: 'upstream services integrated',
+    description: 'print extraction input types',
   },
   {
-    value: '100',
+    value: '4',
     suffix: '+',
-    description: 'model billing support',
-  },
-  {
-    value: '50',
-    suffix: '+',
-    description: 'compatible API routes',
+    description: 'production output stages',
   },
   {
     value: '10',
     suffix: '+',
-    description: 'scheduling controls',
+    description: 'compatible workflow routes',
+  },
+  {
+    value: '24',
+    suffix: '/7',
+    description: 'async API availability',
   },
 ] as const
 
-// Features section - Default features
 export const DEFAULT_FEATURES = [
   {
-    title: 'Lightning Fast',
+    title: 'Print Extraction First',
     description:
-      'Optimized network architecture ensures millisecond response times',
-    iconName: 'Zap',
+      'Built around AI extraction of repeatable print elements from source imagery',
+    iconName: 'ScanSearch',
   },
   {
-    title: 'Secure & Reliable',
+    title: 'Production Workflow',
     description:
-      'Enterprise-grade security with comprehensive permission management',
-    iconName: 'Shield',
+      'Turn references into clean assets for design review and downstream production',
+    iconName: 'Workflow',
   },
   {
-    title: 'Global Coverage',
-    description: 'Multi-region deployment for stable global access',
-    iconName: 'Globe',
+    title: 'Batch Asset Handling',
+    description: 'Process multiple print references through a consistent API workflow',
+    iconName: 'Files',
   },
   {
-    title: 'Developer Friendly',
-    description: 'Compatible API routes for common AI application workflows',
+    title: 'API Native',
+    description:
+      'Integrate extraction jobs, status polling, and result delivery into existing tools',
     iconName: 'Code',
   },
   {
-    title: 'High Performance',
-    description: 'Support for high concurrency with automatic load balancing',
+    title: 'Structured Results',
+    description:
+      'Return preview and output metadata that are easier for teams to consume',
+    iconName: 'Layers3',
+  },
+  {
+    title: 'Usage Visibility',
+    description:
+      'Track asynchronous extraction jobs, progress, and generated results in logs',
     iconName: 'Gauge',
   },
   {
-    title: 'Transparent Billing',
-    description: 'Pay-as-you-go with real-time usage monitoring',
-    iconName: 'DollarSign',
-  },
-  {
-    title: 'Team Collaboration',
-    description: 'Multi-user management with flexible permission allocation',
+    title: 'Team Operations',
+    description:
+      'Support studio, factory, and e-commerce teams with shared API access',
     iconName: 'Users',
   },
   {
-    title: 'Open Source',
-    description: 'Community driven, self-hosted, and extensible',
-    iconName: 'HeartHandshake',
+    title: 'Stable Access',
+    description:
+      'Keep print extraction available for production-oriented workflows',
+    iconName: 'Shield',
   },
 ] as const
-
-export function getGatewayFeatures(t: TFunction) {
-  return GATEWAY_FEATURES.map((feature) => t(feature))
-}
 
 export function getDefaultStats(t: TFunction) {
   return DEFAULT_STATS.map((stat) => ({

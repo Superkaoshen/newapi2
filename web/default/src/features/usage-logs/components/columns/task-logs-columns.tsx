@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 /* eslint-disable react-refresh/only-export-components */
 import { useState, useMemo } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
-import { Music } from 'lucide-react'
+import { ImageIcon, Music } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatTimestampToDate } from '@/lib/format'
@@ -27,14 +27,19 @@ import { cn } from '@/lib/utils'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { DataTableColumnHeader } from '@/components/data-table'
 import { StatusBadge } from '@/components/status-badge'
-import { TASK_ACTIONS, TASK_STATUS } from '../../constants'
-import { taskActionMapper, taskStatusMapper } from '../../lib/mappers'
+import { TASK_ACTIONS, TASK_PLATFORMS, TASK_STATUS } from '../../constants'
+import {
+  taskActionMapper,
+  taskPlatformMapper,
+  taskStatusMapper,
+} from '../../lib/mappers'
 import type { TaskLog } from '../../types'
 import {
   AudioPreviewDialog,
   type AudioClip,
 } from '../dialogs/audio-preview-dialog'
 import { FailReasonDialog } from '../dialogs/fail-reason-dialog'
+import { ImageDialog } from '../dialogs/image-dialog'
 import { useUsageLogsContext } from '../usage-logs-provider'
 import {
   createDurationColumn,
@@ -84,6 +89,38 @@ function AudioPreviewCell({ log }: { log: TaskLog }) {
         open={open}
         onOpenChange={setOpen}
         clips={clips as AudioClip[]}
+      />
+    </>
+  )
+}
+
+function ImagePreviewCell({
+  log,
+  imageUrl,
+}: {
+  log: TaskLog
+  imageUrl: string
+}) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+
+  return (
+    <>
+      <button
+        type='button'
+        className='group flex items-center gap-1 text-left text-xs'
+        onClick={() => setOpen(true)}
+      >
+        <ImageIcon className='text-muted-foreground size-3' />
+        <span className='text-foreground leading-snug group-hover:underline'>
+          {t('Click to preview image')}
+        </span>
+      </button>
+      <ImageDialog
+        imageUrl={imageUrl}
+        taskId={log.task_id}
+        open={open}
+        onOpenChange={setOpen}
       />
     </>
   )
@@ -187,7 +224,8 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
               className='border-border/60 bg-muted/30 max-w-full truncate rounded-md border px-1.5 py-0.5 font-mono'
             />
             <span className='text-muted-foreground/60 truncate text-[11px]'>
-              {t(log.platform)} · {t(taskActionMapper.getLabel(log.action))}
+              {t(taskPlatformMapper.getLabel(log.platform, log.platform))} ·{' '}
+              {t(taskActionMapper.getLabel(log.action))}
             </span>
           </div>
         )
@@ -245,6 +283,16 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
           ) {
             return <AudioPreviewCell log={log} />
           }
+        }
+
+        const imageUrl =
+          log.result_url || (failReason?.startsWith('http') ? failReason : '')
+        if (
+          status === TASK_STATUS.SUCCESS &&
+          log.platform === TASK_PLATFORMS.ASYNC_IMAGE &&
+          imageUrl
+        ) {
+          return <ImagePreviewCell log={log} imageUrl={imageUrl} />
         }
 
         const isVideoTask =

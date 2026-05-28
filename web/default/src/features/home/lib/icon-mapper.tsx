@@ -25,6 +25,10 @@ import {
   DollarSign,
   Users,
   HeartHandshake,
+  Files,
+  Layers3,
+  ScanSearch,
+  Workflow,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -40,6 +44,10 @@ const ICON_MAP: Record<string, LucideIcon> = {
   DollarSign,
   Users,
   HeartHandshake,
+  Files,
+  Layers3,
+  ScanSearch,
+  Workflow,
 }
 
 /**

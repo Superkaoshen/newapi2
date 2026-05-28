@@ -175,6 +175,7 @@ export const TASK_ACTIONS = {
   // Suno (uppercase)
   MUSIC: 'MUSIC', // 生成音乐
   LYRICS: 'LYRICS', // 生成歌词
+  ASYNC_GENERATE: 'asyncGenerate', // 异步图片生成
 
   // Video generation (camelCase)
   GENERATE: 'generate', // 图生视频
@@ -202,6 +203,7 @@ export const TASK_STATUS = {
  */
 export const TASK_PLATFORMS = {
   SUNO: 'suno',
+  ASYNC_IMAGE: 'async_image',
   KLING: 'kling',
   RUNWAY: 'runway',
   LUMA: 'luma',
@@ -283,6 +285,10 @@ export const MJ_SUBMIT_RESULT_MAPPINGS: Record<string, StatusMapping> = {
 export const TASK_ACTION_MAPPINGS: Record<string, StatusMapping> = {
   [TASK_ACTIONS.MUSIC]: { label: 'Generate Music', variant: 'neutral' },
   [TASK_ACTIONS.LYRICS]: { label: 'Generate Lyrics', variant: 'pink' },
+  [TASK_ACTIONS.ASYNC_GENERATE]: {
+    label: 'Async Image Generate',
+    variant: 'orange',
+  },
   [TASK_ACTIONS.GENERATE]: { label: 'Image to Video', variant: 'blue' },
   [TASK_ACTIONS.TEXT_GENERATE]: { label: 'Text to Video', variant: 'blue' },
   [TASK_ACTIONS.FIRST_TAIL_GENERATE]: {
@@ -317,6 +323,10 @@ export const TASK_STATUS_MAPPINGS: Record<string, StatusMapping> = {
  */
 export const TASK_PLATFORM_MAPPINGS: Record<string, StatusMapping> = {
   [TASK_PLATFORMS.SUNO]: { label: 'suno', variant: 'green' },
+  [TASK_PLATFORMS.ASYNC_IMAGE]: {
+    label: 'Async Image Channel',
+    variant: 'orange',
+  },
   [TASK_PLATFORMS.KLING]: { label: 'kling', variant: 'blue' },
   [TASK_PLATFORMS.RUNWAY]: { label: 'runway', variant: 'violet' },
   [TASK_PLATFORMS.LUMA]: { label: 'luma', variant: 'orange' },

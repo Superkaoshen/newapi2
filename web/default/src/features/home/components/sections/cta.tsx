@@ -36,37 +36,31 @@ export function CTA(props: CTAProps) {
 
   return (
     <section className='relative z-10 overflow-hidden px-6 py-24 md:py-32'>
-      {/* Gradient mesh background */}
       <div
         aria-hidden
         className='absolute inset-0 -z-10 opacity-20 dark:opacity-[0.08]'
         style={{
           background: [
-            'radial-gradient(ellipse 50% 50% at 30% 50%, oklch(0.7 0.15 250 / 70%) 0%, transparent 70%)',
-            'radial-gradient(ellipse 40% 40% at 70% 40%, oklch(0.65 0.12 200 / 50%) 0%, transparent 70%)',
+            'radial-gradient(ellipse 50% 50% at 30% 50%, oklch(0.75 0.15 28 / 70%) 0%, transparent 70%)',
+            'radial-gradient(ellipse 40% 40% at 70% 40%, oklch(0.7 0.12 315 / 50%) 0%, transparent 70%)',
           ].join(', '),
         }}
       />
 
-      <AnimateInView
-        className='mx-auto max-w-2xl text-center'
-        animation='scale-in'
-      >
+      <AnimateInView className='mx-auto max-w-2xl text-center' animation='scale-in'>
         <h2 className='text-2xl leading-tight font-bold tracking-tight md:text-4xl'>
-          {t('Ready to simplify')}
+          {t('Ready to extract your next print?')}
           <br />
-          <span className='bg-gradient-to-r from-blue-400 via-violet-400 to-purple-500 bg-clip-text text-transparent'>
-            {t('your AI integration?')}
+          <span className='bg-gradient-to-r from-orange-400 via-pink-400 to-violet-500 bg-clip-text text-transparent'>
+            {t('Start with Tuyao API print extraction today')}
           </span>
         </h2>
         <p className='text-muted-foreground/80 mx-auto mt-5 max-w-md text-sm leading-relaxed md:text-base'>
-          {t(
-            'Deploy your own gateway and start routing requests through your configured upstream services.'
-          )}
+          {t('Create a clean AI print extraction workflow for fashion, merchandise, and pattern production teams.')}
         </p>
         <div className='mt-8 flex items-center justify-center gap-3'>
           <Button className='group rounded-lg' render={<Link to='/sign-up' />}>
-            {t('Get Started')}
+            {t('Start extracting prints')}
             <ArrowRight className='ml-1 size-3.5 transition-transform duration-200 group-hover:translate-x-0.5' />
           </Button>
           <Button

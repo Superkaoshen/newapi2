@@ -282,6 +282,7 @@ var fetchRespBuilders = map[int]func(c *gin.Context) (respBody []byte, taskResp 
 	relayconstant.RelayModeSunoFetchByID:  sunoFetchByIDRespBodyBuilder,
 	relayconstant.RelayModeSunoFetch:      sunoFetchRespBodyBuilder,
 	relayconstant.RelayModeVideoFetchByID: videoFetchByIDRespBodyBuilder,
+	relayconstant.RelayModeAsyncImageFetchByID: asyncImageFetchByIDRespBodyBuilder,
 }
 
 func RelayTaskFetch(c *gin.Context, relayMode int) (taskResp *dto.TaskError) {
@@ -413,6 +414,62 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 		taskResp = service.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
 	}
 	return
+}
+
+func asyncImageFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *dto.TaskError) {
+	taskId := c.Query("id")
+	userId := c.GetInt("id")
+
+	originTask, exist, err := model.GetByTaskId(userId, taskId)
+	if err != nil {
+		taskResp = service.TaskErrorWrapper(err, "get_task_failed", http.StatusInternalServerError)
+		return
+	}
+	if !exist {
+		taskResp = service.TaskErrorWrapperLocal(errors.New("task_not_exist"), "task_not_exist", http.StatusBadRequest)
+		return
+	}
+
+	results := make([]map[string]string, 0)
+	if originTask.Status == model.TaskStatusSuccess && originTask.GetResultURL() != "" {
+		results = append(results, map[string]string{"url": originTask.GetResultURL()})
+	}
+
+	progress := 0
+	if originTask.Progress != "" {
+		_, _ = fmt.Sscanf(originTask.Progress, "%d%%", &progress)
+	}
+	if originTask.Status == model.TaskStatusSuccess || originTask.Status == model.TaskStatusFailure {
+		progress = 100
+	}
+
+	resp := map[string]any{
+		"id":       originTask.TaskID,
+		"status":   asyncImageAPIStatus(originTask.Status),
+		"progress": progress,
+	}
+	if len(results) > 0 {
+		resp["results"] = results
+	}
+	if originTask.Status == model.TaskStatusFailure && originTask.FailReason != "" {
+		resp["error"] = originTask.FailReason
+	}
+	respBody, err = common.Marshal(resp)
+	if err != nil {
+		taskResp = service.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+	}
+	return
+}
+
+func asyncImageAPIStatus(status model.TaskStatus) string {
+	switch status {
+	case model.TaskStatusSuccess:
+		return "succeeded"
+	case model.TaskStatusFailure:
+		return "failed"
+	default:
+		return "running"
+	}
 }
 
 // tryRealtimeFetch 尝试从上游实时拉取 Gemini/Vertex 任务状态。
