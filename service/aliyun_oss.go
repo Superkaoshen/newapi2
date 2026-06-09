@@ -131,6 +131,30 @@ func SaveImageURLToAliyunOSS(rawURL string, upstreamBaseURL string) (string, err
 	return buildAliyunOssPublicURL(cfg, objectKey)
 }
 
+func SaveFileURLToAliyunOSS(rawURL string, upstreamBaseURL string, fallbackContentType string) (string, error) {
+	cfg := GetAliyunOssConfig()
+	if !cfg.IsEnabledAndValid() {
+		return rawURL, nil
+	}
+
+	resolvedURL, err := resolveImageURL(rawURL, upstreamBaseURL)
+	if err != nil {
+		return "", err
+	}
+
+	data, contentType, err := downloadFileBytes(resolvedURL, fallbackContentType)
+	if err != nil {
+		return "", err
+	}
+
+	objectKey := buildAliyunOssObjectKey(cfg.PathPrefix, contentType)
+	if err := uploadBytesToAliyunOSS(cfg, objectKey, data, contentType); err != nil {
+		return "", err
+	}
+
+	return buildAliyunOssPublicURL(cfg, objectKey)
+}
+
 func SaveBase64ImageToAliyunOSS(data string, contentType string) (string, error) {
 	cfg := GetAliyunOssConfig()
 	if !cfg.IsEnabledAndValid() {
@@ -233,6 +257,40 @@ func downloadImageBytes(originURL string) ([]byte, string, error) {
 	return data, contentType, nil
 }
 
+func downloadFileBytes(originURL string, fallbackContentType string) ([]byte, string, error) {
+	resp, err := DoDownloadRequest(originURL, "aliyun_oss_file_replace")
+	if err != nil {
+		return nil, "", err
+	}
+	defer CloseResponseBodyGracefully(resp)
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("download file failed with status %d", resp.StatusCode)
+	}
+
+	maxFileSize := int64(constant.MaxFileDownloadMB*1024*1024) + 1
+	limitedReader := io.LimitReader(resp.Body, maxFileSize)
+	data, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return nil, "", err
+	}
+	if int64(len(data)) >= maxFileSize {
+		return nil, "", fmt.Errorf("file size exceeds maximum allowed size")
+	}
+	if len(data) == 0 {
+		return nil, "", fmt.Errorf("downloaded file is empty")
+	}
+
+	contentType := canonicalContentType(resp.Header.Get("Content-Type"))
+	if contentType == "" || contentType == "application/octet-stream" || contentType == "text/plain" {
+		contentType = canonicalContentType(fallbackContentType)
+	}
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	return data, contentType, nil
+}
+
 func canonicalContentType(contentType string) string {
 	if contentType == "" {
 		return ""
@@ -277,6 +335,8 @@ func imageFileExt(contentType string) string {
 		return ".bmp"
 	case "image/svg+xml":
 		return ".svg"
+	case "application/postscript", "application/eps", "image/x-eps":
+		return ".eps"
 	default:
 		return ".png"
 	}
