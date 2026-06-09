@@ -43,17 +43,17 @@ type vectorizerRequest struct {
 }
 
 type addTaskResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"message,omitempty"`
-	ID      string `json:"id,omitempty"`
-	TaskID  string `json:"taskid,omitempty"`
+	Code    int          `json:"code"`
+	Message string       `json:"message,omitempty"`
+	ID      scalarString `json:"id,omitempty"`
+	TaskID  scalarString `json:"taskid,omitempty"`
 }
 
 type tryGetResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"message,omitempty"`
-	TaskID  string `json:"taskid,omitempty"`
-	URL     string `json:"url,omitempty"`
+	Code    int          `json:"code"`
+	Message string       `json:"message,omitempty"`
+	TaskID  scalarString `json:"taskid,omitempty"`
+	URL     string       `json:"url,omitempty"`
 }
 
 type publicResponse struct {
@@ -175,9 +175,9 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 		return "", nil, service.TaskErrorWrapperLocal(errors.New(resultMessage(result.Message)), "upstream_task_failed", http.StatusBadRequest)
 	}
 
-	taskID := strings.TrimSpace(result.ID)
+	taskID := strings.TrimSpace(result.ID.String())
 	if taskID == "" {
-		taskID = strings.TrimSpace(result.TaskID)
+		taskID = strings.TrimSpace(result.TaskID.String())
 	}
 	if taskID == "" {
 		return "", nil, service.TaskErrorWrapperLocal(errors.New("missing task id"), "invalid_response", http.StatusInternalServerError)
@@ -267,7 +267,7 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	}
 
 	info := &relaycommon.TaskInfo{
-		TaskID:   result.TaskID,
+		TaskID:   result.TaskID.String(),
 		Progress: taskcommon.ProgressInProgress,
 		Reason:   result.Message,
 	}
@@ -296,6 +296,51 @@ func (a *TaskAdaptor) GetChannelName() string {
 
 func isSupportedModel(modelName string) bool {
 	return modelName == modelVectorizer
+}
+
+type scalarString string
+
+func (s *scalarString) UnmarshalJSON(data []byte) error {
+	raw := strings.TrimSpace(string(data))
+	if raw == "" || raw == "null" {
+		*s = ""
+		return nil
+	}
+	if strings.HasPrefix(raw, "\"") {
+		var value string
+		if err := common.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		*s = scalarString(value)
+		return nil
+	}
+	if isJSONNumberToken(raw) {
+		*s = scalarString(raw)
+		return nil
+	}
+	return fmt.Errorf("expected string or number")
+}
+
+func (s scalarString) String() string {
+	return string(s)
+}
+
+func isJSONNumberToken(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	first := raw[0]
+	if first != '-' && (first < '0' || first > '9') {
+		return false
+	}
+	for i := 1; i < len(raw); i++ {
+		ch := raw[i]
+		if (ch >= '0' && ch <= '9') || ch == '.' || ch == 'e' || ch == 'E' || ch == '+' || ch == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func normalizeFormat(format string) string {

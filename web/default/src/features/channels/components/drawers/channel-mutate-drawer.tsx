@@ -122,6 +122,7 @@ import {
   FIELD_DESCRIPTIONS,
   FIELD_PLACEHOLDERS,
   MODEL_FETCHABLE_TYPES,
+  isChannelKeyRequired,
 } from '../../constants'
 import { useChannelMutateForm } from '../../hooks/use-channel-mutate-form'
 import {
@@ -916,8 +917,8 @@ export function ChannelMutateDrawer({
   // Submit handler
   const onSubmit = useCallback(
     async (data: ChannelFormValues) => {
-      // Validate key is required when creating
-      if (!isEditing && !data.key?.trim()) {
+      // Validate key is required when creating channels that need credentials.
+      if (!isEditing && isChannelKeyRequired(data.type) && !data.key?.trim()) {
         form.setError('key', {
           type: 'manual',
           message: ERROR_MESSAGES.REQUIRED_KEY,
@@ -1862,9 +1863,12 @@ export function ChannelMutateDrawer({
                             }
                             return t(getKeyPromptForType(currentType))
                           })()
+                          const keyRequired = isChannelKeyRequired(currentType)
                           return (
                             <FormItem>
-                              <FormLabel>{t('API Key *')}</FormLabel>
+                              <FormLabel>
+                                {keyRequired ? t('API Key *') : t('API Key')}
+                              </FormLabel>
                               <FormControl>
                                 <Textarea
                                   placeholder={keyPlaceholder}

@@ -104,6 +104,12 @@ export const CHANNEL_TYPE_OPTIONS: { value: number; label: string }[] = (() => {
   return ordered
 })()
 
+export const OPTIONAL_KEY_CHANNEL_TYPES = new Set<number>([58])
+
+export function isChannelKeyRequired(type: number): boolean {
+  return !OPTIONAL_KEY_CHANNEL_TYPES.has(type)
+}
+
 // ============================================================================
 // Channel Status (label values are i18n keys; use t(config.label) in components)
 // ============================================================================

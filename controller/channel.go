@@ -455,6 +455,10 @@ func validateTwoFactorAuth(twoFA *model.TwoFA, code string) bool {
 
 // validateChannel 通用的渠道校验函数
 func validateChannel(channel *model.Channel, isAdd bool) error {
+	if channel == nil {
+		return fmt.Errorf("channel cannot be empty")
+	}
+
 	// 校验 channel settings
 	if err := channel.ValidateSettings(); err != nil {
 		return fmt.Errorf("渠道额外设置[channel setting] 格式错误：%s", err.Error())
@@ -462,8 +466,8 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 
 	// 如果是添加操作，检查 channel 和 key 是否为空
 	if isAdd {
-		if channel == nil || channel.Key == "" {
-			return fmt.Errorf("channel cannot be empty")
+		if isChannelKeyRequired(channel) && strings.TrimSpace(channel.Key) == "" {
+			return fmt.Errorf("channel key cannot be empty")
 		}
 
 		// 检查模型名称长度是否超过 255
@@ -511,6 +515,13 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 	}
 
 	return nil
+}
+
+func isChannelKeyRequired(channel *model.Channel) bool {
+	if channel == nil {
+		return true
+	}
+	return channel.Type != constant.ChannelTypeVectorizer
 }
 
 func RefreshCodexChannelCredential(c *gin.Context) {
@@ -657,7 +668,7 @@ func AddChannel(c *gin.Context) {
 
 	channels := make([]model.Channel, 0, len(keys))
 	for _, key := range keys {
-		if key == "" {
+		if strings.TrimSpace(key) == "" && isChannelKeyRequired(addChannelRequest.Channel) {
 			continue
 		}
 		localChannel := addChannelRequest.Channel
