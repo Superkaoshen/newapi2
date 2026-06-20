@@ -97,6 +97,55 @@ func TestBuildRequestBodyAllowsMappedModel(t *testing.T) {
 	}
 }
 
+func TestDoResponseUsesOriginModelName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("task_request", relaycommon.TaskSubmitReq{Model: "gemini-3-pro-image"})
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"id":"upstream","status":"pending","model":"nano-banana-pro"}`)),
+	}
+	info := &relaycommon.RelayInfo{
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+		OriginModelName: "gemini-3-pro-image",
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "nano-banana-pro"},
+	}
+
+	_, _, taskErr := (&TaskAdaptor{}).DoResponse(c, resp, info)
+	if taskErr != nil {
+		t.Fatalf("DoResponse taskErr = %v", taskErr)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"model":"gemini-3-pro-image"`) {
+		t.Fatalf("response body = %s, want origin model", body)
+	}
+	if strings.Contains(body, `"model":"nano-banana-pro"`) {
+		t.Fatalf("response body leaked upstream model: %s", body)
+	}
+}
+
+func TestConvertStoredTaskUsesOriginModelName(t *testing.T) {
+	task := &model.Task{
+		TaskID: "task_public",
+		Status: model.TaskStatusSuccess,
+		Properties: model.Properties{
+			OriginModelName:   "gemini-3-pro-image",
+			UpstreamModelName: "nano-banana-pro",
+		},
+		Data: []byte(`{"id":"upstream","task_id":"upstream","object":"async.generation","type":"image","status":"completed","model":"nano-banana-pro","result":{"image_url":"https://oss.example.com/a.png"}}`),
+	}
+
+	body := string(ConvertStoredTask(task))
+	if !strings.Contains(body, `"model":"gemini-3-pro-image"`) {
+		t.Fatalf("stored response = %s, want origin model", body)
+	}
+	if strings.Contains(body, `"model":"nano-banana-pro"`) {
+		t.Fatalf("stored response leaked upstream model: %s", body)
+	}
+}
+
 func allowTestServerPort(t *testing.T, rawURL string) func() {
 	t.Helper()
 	u, err := url.Parse(rawURL)

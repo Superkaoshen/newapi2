@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
@@ -208,6 +209,35 @@ func TestListModelsIncludesTieredBillingModel(t *testing.T) {
 	require.True(t, ok)
 	require.Empty(t, missingExprPricing.BillingMode)
 	require.Empty(t, missingExprPricing.BillingExpr)
+}
+
+func TestPricingIncludesPerRequestPriceTiers(t *testing.T) {
+	oldPriceJSON := ratio_setting.ModelPrice2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(oldPriceJSON))
+		model.InvalidatePricingCache()
+	})
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{
+		"zz-image-model": 0.075,
+		"zz-image-model@1k": 0.075,
+		"zz-image-model@2k": 0.1125,
+		"zz-image-model@4k": 0.15,
+		"zz-image-model@4k@high": 0.225
+	}`))
+	model.InvalidatePricingCache()
+
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.Create(&model.Channel{Id: 1, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled}).Error)
+	require.NoError(t, db.Create(&model.Ability{Group: "default", Model: "zz-image-model", ChannelId: 1, Enabled: true}).Error)
+
+	pricingByName := pricingByModelName(model.GetPricing())
+	pricing, ok := pricingByName["zz-image-model"]
+	require.True(t, ok)
+	require.Equal(t, 1, pricing.QuotaType)
+	require.Equal(t, 0.075, pricing.ModelPrice)
+	require.Len(t, pricing.PriceTiers, 4)
+	require.Equal(t, model.PricingTier{Key: "zz-image-model@1k", Size: "1k", Price: 0.075}, pricing.PriceTiers[0])
+	require.Equal(t, model.PricingTier{Key: "zz-image-model@4k@high", Size: "4k", Quality: "high", Price: 0.225}, pricing.PriceTiers[3])
 }
 
 func TestListModelsTokenLimitIncludesTieredBillingModel(t *testing.T) {

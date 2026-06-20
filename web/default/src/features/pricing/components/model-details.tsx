@@ -62,7 +62,11 @@ import {
 import { parseTags } from '../lib/filters'
 import { getAvailableGroups, isTokenBasedModel } from '../lib/model-helpers'
 import { inferModelMetadata } from '../lib/model-metadata'
-import { formatFixedPrice, formatGroupPrice } from '../lib/price'
+import {
+  formatFixedPrice,
+  formatGroupPrice,
+  formatTierPrice,
+} from '../lib/price'
 import type {
   Modality,
   ModelCapability,
@@ -477,8 +481,9 @@ function PriceSection(props: {
   }
 
   if (!isTokenBased) {
+    const priceTiers = props.model.price_tiers || []
     return (
-      <section>
+      <section className='space-y-3'>
         <SectionTitle>{t('Base Price')}</SectionTitle>
         <div className='flex items-baseline justify-between'>
           <span className='text-muted-foreground text-sm'>
@@ -495,6 +500,43 @@ function PriceSection(props: {
             )}
           </span>
         </div>
+        {priceTiers.length > 0 && (
+          <div className='overflow-hidden rounded-lg border'>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t('Size')}</TableHead>
+                  {priceTiers.some((tier) => tier.quality) && (
+                    <TableHead>{t('Quality')}</TableHead>
+                  )}
+                  <TableHead className='text-right'>{t('Price')}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {priceTiers.map((tier) => (
+                  <TableRow key={tier.key}>
+                    <TableCell className='font-mono text-xs uppercase'>
+                      {tier.size || '-'}
+                    </TableCell>
+                    {priceTiers.some((item) => item.quality) && (
+                      <TableCell className='font-mono text-xs uppercase'>
+                        {tier.quality || '-'}
+                      </TableCell>
+                    )}
+                    <TableCell className='text-right font-mono text-xs font-medium tabular-nums'>
+                      {formatTierPrice(
+                        tier.price,
+                        props.showRechargePrice,
+                        props.priceRate,
+                        props.usdExchangeRate
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
       </section>
     )
   }

@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"sync"
@@ -24,6 +25,7 @@ type Pricing struct {
 	QuotaType              int                     `json:"quota_type"`
 	ModelRatio             float64                 `json:"model_ratio"`
 	ModelPrice             float64                 `json:"model_price"`
+	PriceTiers             []PricingTier           `json:"price_tiers,omitempty"`
 	OwnerBy                string                  `json:"owner_by"`
 	CompletionRatio        float64                 `json:"completion_ratio"`
 	CacheRatio             *float64                `json:"cache_ratio,omitempty"`
@@ -36,6 +38,13 @@ type Pricing struct {
 	BillingMode            string                  `json:"billing_mode,omitempty"`
 	BillingExpr            string                  `json:"billing_expr,omitempty"`
 	PricingVersion         string                  `json:"pricing_version,omitempty"`
+}
+
+type PricingTier struct {
+	Key     string  `json:"key"`
+	Size    string  `json:"size,omitempty"`
+	Quality string  `json:"quality,omitempty"`
+	Price   float64 `json:"price"`
 }
 
 type PricingVendor struct {
@@ -308,6 +317,7 @@ func updatePricing() {
 		if findPrice {
 			pricing.ModelPrice = modelPrice
 			pricing.QuotaType = 1
+			pricing.PriceTiers = collectModelPriceTiers(model)
 		} else {
 			modelRatio, _, _ := ratio_setting.GetModelRatio(model)
 			pricing.ModelRatio = modelRatio
@@ -356,6 +366,44 @@ func updatePricing() {
 	modelEnableGroupsLock.Unlock()
 
 	lastGetPricingTime = time.Now()
+}
+
+func collectModelPriceTiers(modelName string) []PricingTier {
+	prefix := modelName + "@"
+	prices := ratio_setting.GetModelPriceCopy()
+	tiers := make([]PricingTier, 0)
+	for key, price := range prices {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		parts := strings.Split(strings.TrimPrefix(key, prefix), "@")
+		tier := PricingTier{Key: key, Price: price}
+		if len(parts) > 0 {
+			tier.Size = strings.ToLower(strings.TrimSpace(parts[0]))
+		}
+		if len(parts) > 1 {
+			tier.Quality = strings.ToLower(strings.TrimSpace(parts[1]))
+		}
+		tiers = append(tiers, tier)
+	}
+	sortPricingTiers(tiers)
+	return tiers
+}
+
+func sortPricingTiers(tiers []PricingTier) {
+	sizeRank := map[string]int{"1k": 1, "2k": 2, "4k": 4}
+	qualityRank := map[string]int{"low": 1, "medium": 2, "high": 3}
+	sort.Slice(tiers, func(i, j int) bool {
+		li, lj := sizeRank[tiers[i].Size], sizeRank[tiers[j].Size]
+		if li != lj {
+			return li < lj
+		}
+		qi, qj := qualityRank[tiers[i].Quality], qualityRank[tiers[j].Quality]
+		if qi != qj {
+			return qi < qj
+		}
+		return tiers[i].Key < tiers[j].Key
+	})
 }
 
 // GetSupportedEndpointMap 返回全局端点到路径的映射

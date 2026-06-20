@@ -172,6 +172,7 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	upstream.TaskID = info.PublicTaskID
 	upstream.Object = "async.generation"
 	upstream.Type = "image"
+	upstream.Model = info.OriginModelName
 	if upstream.Mode == "" {
 		req, _ := relaycommon.GetTaskRequest(c)
 		upstream.Mode = resolveMode(req)
@@ -547,6 +548,7 @@ func ConvertStoredTask(task *model.Task) []byte {
 		if err := common.Unmarshal(task.Data, &resp); err == nil {
 			resp.ID = task.TaskID
 			resp.TaskID = task.TaskID
+			resp.Model = publicTaskModel(task)
 			if resp.Object == "" {
 				resp.Object = "async.generation"
 			}
@@ -570,11 +572,21 @@ func responseFromTaskStatus(task *model.Task) []byte {
 		TaskID:    task.TaskID,
 		Object:    "async.generation",
 		Type:      "image",
-		Model:     task.Properties.OriginModelName,
+		Model:     publicTaskModel(task),
 		CreatedAt: task.CreatedAt,
 	}
 	applyTaskStatus(&resp, task)
 	return normalizeResponseData(resp)
+}
+
+func publicTaskModel(task *model.Task) string {
+	if task == nil {
+		return ""
+	}
+	if task.Properties.OriginModelName != "" {
+		return task.Properties.OriginModelName
+	}
+	return task.Properties.UpstreamModelName
 }
 
 func applyTaskStatus(resp *asyncGenerationResponse, task *model.Task) {

@@ -39,6 +39,7 @@ export type PricingModel = {
   model_ratio: number
   completion_ratio: number
   model_price?: number
+  price_tiers?: PricingTier[]
   cache_ratio?: number | null
   create_cache_ratio?: number | null
   image_ratio?: number | null
@@ -69,6 +70,13 @@ export type PricingModel = {
   input_modalities?: Modality[]
   output_modalities?: Modality[]
   capabilities?: ModelCapability[]
+}
+
+export type PricingTier = {
+  key: string
+  size?: string
+  quality?: string
+  price: number
 }
 
 /** Input/output modalities supported by a model. */

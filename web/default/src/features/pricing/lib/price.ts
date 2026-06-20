@@ -261,6 +261,26 @@ export function formatFixedPrice(
   })
 }
 
+export function formatTierPrice(
+  price: number,
+  showWithRecharge = false,
+  priceRate = 1,
+  usdExchangeRate = 1
+): string {
+  const priceInUSD = applyRechargeRate(
+    price || 0,
+    showWithRecharge,
+    priceRate,
+    usdExchangeRate
+  )
+
+  return formatCurrencyFromUSD(priceInUSD, {
+    digitsLarge: 4,
+    digitsSmall: 4,
+    abbreviate: false,
+  })
+}
+
 /**
  * Format fixed price for pay-per-request models (minimum price from all groups)
  */
