@@ -1,6 +1,7 @@
 package mihuifang
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,8 +11,11 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
+	"github.com/gin-gonic/gin"
 )
 
 func TestParseTaskResultReplacesResultImagesWithOSSURLs(t *testing.T) {
@@ -66,6 +70,30 @@ func TestParseTaskResultReplacesResultImagesWithOSSURLs(t *testing.T) {
 	}
 	if !strings.Contains(data, "https://cdn.example.com/async-images/") {
 		t.Fatalf("response data does not contain OSS URL: %s", data)
+	}
+}
+
+func TestBuildRequestBodyAllowsMappedModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:  "gemini-3-pro-image",
+		Prompt: "draw a cat",
+	})
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "nano-banana-pro"},
+	}
+
+	body, err := (&TaskAdaptor{}).BuildRequestBody(c, info)
+	if err != nil {
+		t.Fatalf("BuildRequestBody error = %v", err)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read body error = %v", err)
+	}
+	if !strings.Contains(string(data), `"model":"nano-banana-pro"`) {
+		t.Fatalf("body = %s, want mapped upstream model", string(data))
 	}
 }
 
@@ -124,6 +152,65 @@ func TestImageSizeTier(t *testing.T) {
 		if got := imageSizeTier(tt.size, tt.resolution); got != tt.want {
 			t.Fatalf("imageSizeTier(%q, %q) = %q, want %q", tt.size, tt.resolution, got, tt.want)
 		}
+	}
+}
+
+func TestEstimateBillingUsesMappedModelResolutionQualityAndCount(t *testing.T) {
+	oldPriceJSON := ratio_setting.ModelPrice2JSONString()
+	defer func() { _ = ratio_setting.UpdateModelPriceByJSONString(oldPriceJSON) }()
+	if err := ratio_setting.UpdateModelPriceByJSONString(`{
+		"gemini-3-pro-image": 0.01,
+		"gemini-3-pro-image@4k@high": 0.08
+	}`); err != nil {
+		t.Fatalf("UpdateModelPriceByJSONString error = %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:      "gemini-3-pro-image",
+		Resolution: "4K",
+		Quality:    "high",
+		N:          2,
+	})
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gemini-3-pro-image",
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gpt-image-2"},
+	}
+
+	ratios := (&TaskAdaptor{}).EstimateBilling(c, info)
+	if ratios["price_tier"] != 8 {
+		t.Fatalf("price_tier ratio = %v, want 8", ratios["price_tier"])
+	}
+	if _, ok := ratios["quality"]; ok {
+		t.Fatalf("quality ratio should be folded into price_tier: %v", ratios)
+	}
+	if ratios["n"] != 2 {
+		t.Fatalf("n ratio = %v, want 2", ratios["n"])
+	}
+}
+
+func TestValidateBillingRequiresTierPrice(t *testing.T) {
+	oldPriceJSON := ratio_setting.ModelPrice2JSONString()
+	defer func() { _ = ratio_setting.UpdateModelPriceByJSONString(oldPriceJSON) }()
+	if err := ratio_setting.UpdateModelPriceByJSONString(`{"gemini-3-pro-image": 0.01}`); err != nil {
+		t.Fatalf("UpdateModelPriceByJSONString error = %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:      "gemini-3-pro-image",
+		Resolution: "4K",
+	})
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gemini-3-pro-image",
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "nano-banana-pro"},
+	}
+
+	err := (&TaskAdaptor{}).ValidateBilling(c, info)
+	if err == nil || !strings.Contains(err.Error(), "gemini-3-pro-image@4k") {
+		t.Fatalf("ValidateBilling error = %v, want missing tier price", err)
 	}
 }
 

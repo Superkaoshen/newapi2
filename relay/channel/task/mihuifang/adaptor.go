@@ -17,6 +17,7 @@ import (
 	taskcommon "github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
 )
@@ -66,9 +67,6 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	if strings.TrimSpace(req.Model) == "" {
 		return service.TaskErrorWrapperLocal(fmt.Errorf("model field is required"), "missing_model", http.StatusBadRequest)
 	}
-	if !isSupportedModel(req.Model) {
-		return service.TaskErrorWrapperLocal(fmt.Errorf("unsupported model: %s", req.Model), "unsupported_model", http.StatusBadRequest)
-	}
 	if hasImageInput(req) && req.Mode == "" {
 		info.Action = constant.TaskActionGenerate
 	} else {
@@ -82,10 +80,26 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 	if err != nil {
 		return nil
 	}
+	priceRatio := imageTierPriceRatio(info.OriginModelName, info.UpstreamModelName, req)
 	return map[string]float64{
-		"size":    imageSizeRatio(req.Size, req.Resolution),
-		"quality": imageQualityRatio(info.OriginModelName, req.Quality),
+		"price_tier": priceRatio,
+		"n":          imageCountRatio(req.N),
 	}
+}
+
+func (a *TaskAdaptor) ValidateBilling(c *gin.Context, info *relaycommon.RelayInfo) error {
+	req, err := relaycommon.GetTaskRequest(c)
+	if err != nil {
+		return err
+	}
+	if _, ok := lookupConfiguredModelPrice(info.OriginModelName); !ok {
+		return fmt.Errorf("model price is required for %s", info.OriginModelName)
+	}
+	tierKey := imageTierPriceKey(req, info.UpstreamModelName)
+	if _, ok := lookupConfiguredModelPrice(info.OriginModelName + tierKey); !ok {
+		return fmt.Errorf("model price is required for %s", info.OriginModelName+tierKey)
+	}
+	return nil
 }
 
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
@@ -103,6 +117,9 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	req, err := relaycommon.GetTaskRequest(c)
 	if err != nil {
 		return nil, err
+	}
+	if !isSupportedModel(info.UpstreamModelName) {
+		return nil, fmt.Errorf("unsupported model: %s", info.UpstreamModelName)
 	}
 	body := map[string]interface{}{
 		"model":  info.UpstreamModelName,
@@ -422,6 +439,53 @@ func imageQualityRatio(modelName, quality string) float64 {
 	default:
 		return 1
 	}
+}
+
+func imageTierPriceRatio(originModel, upstreamModel string, req relaycommon.TaskSubmitReq) float64 {
+	basePrice, ok := lookupConfiguredModelPrice(originModel)
+	if !ok || basePrice <= 0 {
+		return 1
+	}
+	tierKey := imageTierPriceKey(req, upstreamModel)
+	tierPrice, ok := lookupConfiguredModelPrice(originModel + tierKey)
+	if !ok || tierPrice <= 0 {
+		return 1
+	}
+	return tierPrice / basePrice
+}
+
+func imageTierPriceKey(req relaycommon.TaskSubmitReq, upstreamModel string) string {
+	parts := []string{imageSizeTier(req.Size, req.Resolution)}
+	if upstreamModel == "gpt-image-2" {
+		quality := strings.ToLower(strings.TrimSpace(req.Quality))
+		if quality == "" {
+			quality = "medium"
+		}
+		parts = append(parts, quality)
+	}
+	return "@" + strings.Join(parts, "@")
+}
+
+func lookupConfiguredModelPrice(names ...string) (float64, bool) {
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		if price, ok := ratio_setting.GetModelPrice(name, false); ok {
+			return price, true
+		}
+		if price, ok := ratio_setting.GetDefaultModelPriceMap()[name]; ok {
+			return price, true
+		}
+	}
+	return 0, false
+}
+
+func imageCountRatio(n int) float64 {
+	if n <= 1 {
+		return 1
+	}
+	return float64(n)
 }
 
 func imageSizeRatio(size, resolution string) float64 {
