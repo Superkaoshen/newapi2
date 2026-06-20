@@ -682,16 +682,21 @@ type TaskRelayInfo struct {
 }
 
 type TaskSubmitReq struct {
-	Prompt         string                 `json:"prompt"`
-	Model          string                 `json:"model,omitempty"`
-	Mode           string                 `json:"mode,omitempty"`
-	Image          string                 `json:"image,omitempty"`
-	Images         []string               `json:"images,omitempty"`
-	Size           string                 `json:"size,omitempty"`
-	Duration       int                    `json:"duration,omitempty"`
-	Seconds        string                 `json:"seconds,omitempty"`
-	InputReference string                 `json:"input_reference,omitempty"`
-	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+	Prompt          string                 `json:"prompt"`
+	Model           string                 `json:"model,omitempty"`
+	Mode            string                 `json:"mode,omitempty"`
+	Image           string                 `json:"image,omitempty"`
+	Images          []string               `json:"images,omitempty"`
+	ReferenceImages []string               `json:"referenceImages,omitempty"`
+	Size            string                 `json:"size,omitempty"`
+	Quality         string                 `json:"quality,omitempty"`
+	AspectRatio     string                 `json:"aspect_ratio,omitempty"`
+	Resolution      string                 `json:"resolution,omitempty"`
+	N               int                    `json:"n,omitempty"`
+	Duration        int                    `json:"duration,omitempty"`
+	Seconds         string                 `json:"seconds,omitempty"`
+	InputReference  string                 `json:"input_reference,omitempty"`
+	Metadata        map[string]interface{} `json:"metadata,omitempty"`
 }
 
 func (t *TaskSubmitReq) GetPrompt() string {
@@ -699,14 +704,15 @@ func (t *TaskSubmitReq) GetPrompt() string {
 }
 
 func (t *TaskSubmitReq) HasImage() bool {
-	return len(t.Images) > 0
+	return strings.TrimSpace(t.Image) != "" || len(t.Images) > 0 || len(t.ReferenceImages) > 0
 }
 
 func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 	type Alias TaskSubmitReq
 	aux := &struct {
-		Metadata json.RawMessage `json:"metadata,omitempty"`
-		Duration json.RawMessage `json:"duration,omitempty"`
+		Metadata        json.RawMessage `json:"metadata,omitempty"`
+		Duration        json.RawMessage `json:"duration,omitempty"`
+		ReferenceImages []string        `json:"reference_images,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(t),
@@ -745,6 +751,9 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 			t.Metadata = metadataObj
 		}
 	}
+	if len(t.ReferenceImages) == 0 && len(aux.ReferenceImages) > 0 {
+		t.ReferenceImages = aux.ReferenceImages
+	}
 
 	return nil
 }
@@ -773,6 +782,7 @@ type TaskInfo struct {
 	Progress         string `json:"progress,omitempty"`
 	CompletionTokens int    `json:"completion_tokens,omitempty"` // 用于按倍率计费
 	TotalTokens      int    `json:"total_tokens,omitempty"`      // 用于按倍率计费
+	Data             []byte `json:"-"`
 }
 
 func FailTaskInfo(reason string) *TaskInfo {

@@ -112,7 +112,18 @@ func SaveImageURLToAliyunOSS(rawURL string, upstreamBaseURL string) (string, err
 	if !cfg.IsEnabledAndValid() {
 		return rawURL, nil
 	}
+	return saveImageURLToAliyunOSSWithConfig(cfg, rawURL, upstreamBaseURL)
+}
 
+func StrictSaveImageURLToAliyunOSS(rawURL string, upstreamBaseURL string) (string, error) {
+	cfg := GetAliyunOssConfig()
+	if !cfg.IsEnabledAndValid() {
+		return "", fmt.Errorf("aliyun oss is not enabled or configured")
+	}
+	return saveImageURLToAliyunOSSWithConfig(cfg, rawURL, upstreamBaseURL)
+}
+
+func saveImageURLToAliyunOSSWithConfig(cfg AliyunOssConfig, rawURL string, upstreamBaseURL string) (string, error) {
 	resolvedURL, err := resolveImageURL(rawURL, upstreamBaseURL)
 	if err != nil {
 		return "", err

@@ -86,12 +86,20 @@ func validateMultipartTaskRequest(c *gin.Context, info *RelayInfo, action string
 
 	formData := c.Request.PostForm
 	req = TaskSubmitReq{
-		Prompt:   formData.Get("prompt"),
-		Model:    formData.Get("model"),
-		Mode:     formData.Get("mode"),
-		Image:    formData.Get("image"),
-		Size:     formData.Get("size"),
-		Metadata: make(map[string]interface{}),
+		Prompt:      formData.Get("prompt"),
+		Model:       formData.Get("model"),
+		Mode:        formData.Get("mode"),
+		Image:       formData.Get("image"),
+		Size:        formData.Get("size"),
+		Quality:     formData.Get("quality"),
+		AspectRatio: formData.Get("aspect_ratio"),
+		Resolution:  formData.Get("resolution"),
+		Metadata:    make(map[string]interface{}),
+	}
+	if nStr := formData.Get("n"); nStr != "" {
+		if n, err := strconv.Atoi(nStr); err == nil {
+			req.N = n
+		}
 	}
 
 	if durationStr := formData.Get("seconds"); durationStr != "" {
@@ -102,6 +110,12 @@ func validateMultipartTaskRequest(c *gin.Context, info *RelayInfo, action string
 
 	if images := formData["images"]; len(images) > 0 {
 		req.Images = images
+	}
+	if images := formData["referenceImages"]; len(images) > 0 {
+		req.ReferenceImages = images
+	}
+	if images := formData["reference_images"]; len(images) > 0 {
+		req.ReferenceImages = images
 	}
 
 	for key, values := range formData {
@@ -183,14 +197,20 @@ func ValidateMultipartDirect(c *gin.Context, info *RelayInfo) *dto.TaskError {
 
 func isKnownTaskField(field string) bool {
 	knownFields := map[string]bool{
-		"prompt":          true,
-		"model":           true,
-		"mode":            true,
-		"image":           true,
-		"images":          true,
-		"size":            true,
-		"duration":        true,
-		"input_reference": true, // Sora 特有字段
+		"prompt":           true,
+		"model":            true,
+		"mode":             true,
+		"image":            true,
+		"images":           true,
+		"referenceImages":  true,
+		"reference_images": true,
+		"size":             true,
+		"quality":          true,
+		"aspect_ratio":     true,
+		"resolution":       true,
+		"n":                true,
+		"duration":         true,
+		"input_reference":  true, // Sora 特有字段
 	}
 	return knownFields[field]
 }
