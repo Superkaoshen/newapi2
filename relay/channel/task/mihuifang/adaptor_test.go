@@ -97,6 +97,113 @@ func TestBuildRequestBodyAllowsMappedModel(t *testing.T) {
 	}
 }
 
+func TestBuildRequestBodyNormalizesNanoLegacySize(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:  "nanobanana2",
+		Prompt: "draw a poster",
+		Size:   "9x16-4k",
+	})
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "nanobanana2"},
+	}
+
+	body, err := (&TaskAdaptor{}).BuildRequestBody(c, info)
+	if err != nil {
+		t.Fatalf("BuildRequestBody error = %v", err)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read body error = %v", err)
+	}
+	var payload map[string]interface{}
+	if err := common.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal body error = %v", err)
+	}
+	if got := payload["size"]; got != "3072x5504" {
+		t.Fatalf("size = %v, want 3072x5504; body=%s", got, data)
+	}
+	if got := payload["quality"]; got != "hd" {
+		t.Fatalf("quality = %v, want hd; body=%s", got, data)
+	}
+	if strings.Contains(string(data), "9x16-4k") {
+		t.Fatalf("body leaked legacy size: %s", data)
+	}
+}
+
+func TestBuildRequestBodyUsesOfficialNanoSize(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:  "nanobanana",
+		Prompt: "draw a product",
+		Size:   "1584x672",
+	})
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "nanobanana"},
+	}
+
+	body, err := (&TaskAdaptor{}).BuildRequestBody(c, info)
+	if err != nil {
+		t.Fatalf("BuildRequestBody error = %v", err)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read body error = %v", err)
+	}
+	var payload map[string]interface{}
+	if err := common.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal body error = %v", err)
+	}
+	if got := payload["size"]; got != "1584x672" {
+		t.Fatalf("size = %v, want 1584x672; body=%s", got, data)
+	}
+	if got := payload["quality"]; got != "standard" {
+		t.Fatalf("quality = %v, want standard; body=%s", got, data)
+	}
+}
+
+func TestBuildRequestBodyRejectsUnsupportedNanoExtendedRatio(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:  "nanobananapro",
+		Prompt: "draw a banner",
+		Size:   "8x1-1k",
+	})
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "nanobananapro"},
+	}
+
+	if _, err := (&TaskAdaptor{}).BuildRequestBody(c, info); err == nil || !strings.Contains(err.Error(), "does not support ratio 8:1") {
+		t.Fatalf("BuildRequestBody error = %v, want unsupported extended ratio", err)
+	}
+}
+
+func TestBuildRequestBodyEnforcesImageLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:  "nanobanana",
+		Prompt: "draw",
+		Images: []string{
+			"https://example.com/1.png",
+			"https://example.com/2.png",
+			"https://example.com/3.png",
+			"https://example.com/4.png",
+			"https://example.com/5.png",
+		},
+	})
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "nanobanana"},
+	}
+
+	if _, err := (&TaskAdaptor{}).BuildRequestBody(c, info); err == nil || !strings.Contains(err.Error(), "at most 4 input images") {
+		t.Fatalf("BuildRequestBody error = %v, want image limit error", err)
+	}
+}
+
 func TestTaskSubmitReqAcceptsImageArray(t *testing.T) {
 	var req relaycommon.TaskSubmitReq
 	if err := common.Unmarshal([]byte(`{"model":"nanobanana","prompt":"draw","image":["https://example.com/a.png","https://example.com/b.png"]}`), &req); err != nil {
@@ -264,6 +371,10 @@ func TestImageSizeTier(t *testing.T) {
 		{size: "1x1", want: "1k"},
 		{size: "16x9-2k", want: "2k"},
 		{size: "2k-16x9", want: "2k"},
+		{size: "1584x672", want: "1k"},
+		{size: "3168x1344", want: "2k"},
+		{size: "6336x2688", want: "4k"},
+		{size: "3072x384", want: "1k"},
 		{size: "3840x2160", want: "4k"},
 		{resolution: "4K", want: "4k"},
 	}

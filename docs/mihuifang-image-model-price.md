@@ -1,143 +1,41 @@
-# Mihuifang 异步图片模型价格配置
+# Mihuifang / AIAPIPro 图片模型价格配置
 
-下面这份 JSON 适配当前系统的 `ModelPrice` 配置，可以直接粘贴到后台：
+本文仅保留当前系统价格摘要。完整模型字段、尺寸表、参考图限制和适配器要求请查看 [AIAPIPro 图片模型官方参考文档](./aiapipro-image-models-reference.md)，对外调用示例请查看 [AIAPIPro 异步图片调用文档](./aiapipro-image-api-call-guide.md)。
 
-```text
-后台 -> 系统设置 -> 模型设置 / 计费设置 -> 模型价格 / Model prices
-```
+旧版 `mihuifang` 文档中的比例档位写法和加价规则已废弃；后续适配以 AIAPIPro 官方文档为准。
 
-计价规则：
+## 当前默认价格
 
-- 已在你给的成本价基础上统一加价 50%。
-- `gpt-image-2` 按 `模型@清晰度@质量` 配置。
-- `nano-banana`、`nano-banana2`、`nano-banana-pro` 当前系统按 `模型@清晰度` 配置。
-- 当前系统不按 `ratio` 单独计费，所以同一模型同一清晰度下存在多个比例价格时，按该清晰度的最高成本价加 50% 配置，避免低估成本。
-- `n` 不需要单独配置，系统会自动按生成张数倍乘。
-- 如果使用渠道模型映射，价格 key 必须使用用户请求的模型名，不是上游模型名。
+本系统默认价格按上游价格翻倍。
 
-## 可直接使用的 ModelPrice JSON
+| 价格 key | 默认价格 |
+|---|---:|
+| `gpt-image-2` | 0.10 |
+| `gpt-image-2@low` | 0.10 |
+| `gpt-image-2@medium` | 0.11 |
+| `gpt-image-2@high` | 0.15 |
+| `gpt-image-2@low@psd` | 0.16 |
+| `gpt-image-2@medium@psd` | 0.17 |
+| `gpt-image-2@high@psd` | 0.20 |
+| `gpt-image-2@psd` | 0.30 |
+| `nanobanana` | 0.04 |
+| `nanobanana@1k` | 0.04 |
+| `nanobanana@2k` | 0.08 |
+| `nanobanana@4k` | 0.12 |
+| `nanobanana2` | 0.06 |
+| `nanobanana2@1k` | 0.06 |
+| `nanobanana2@2k` | 0.10 |
+| `nanobanana2@4k` | 0.14 |
+| `nanobananapro` | 0.08 |
+| `nanobananapro@1k` | 0.08 |
+| `nanobananapro@2k` | 0.12 |
+| `nanobananapro@4k` | 0.20 |
 
-```json
-{
-  "gemini-3-pro-image-preview": 0.2,
-  "gemini-3.1-flash-image": 0.1333,
+旧别名 `nano-banana`、`nano-banana2`、`nano-banana-pro` 也保留对应默认价格，分别映射到 `nanobanana`、`nanobanana2`、`nanobananapro`。
 
-  "gemini-2.5-flash-image": 0.05,
-  "gemini-2.5-flash-image@1k": 0.05,
-  "gemini-2.5-flash-image@2k": 0.1,
-  "gemini-2.5-flash-image@4k": 0.15,
+## 计费规则
 
-  "gemini-3-pro-image": 0.1,
-  "gemini-3-pro-image@1k": 0.1,
-  "gemini-3-pro-image@2k": 0.15,
-  "gemini-3-pro-image@4k": 0.2,
-
-  "gpt-image-2": 0.06,
-  "gpt-image-2@1k@low": 0.06,
-  "gpt-image-2@2k@low": 0.1,
-  "gpt-image-2@4k@low": 0.15,
-  "gpt-image-2@1k@medium": 0.06,
-  "gpt-image-2@2k@medium": 0.1,
-  "gpt-image-2@4k@medium": 0.15,
-  "gpt-image-2@1k@high": 0.1,
-  "gpt-image-2@2k@high": 0.16,
-  "gpt-image-2@4k@high": 0.3
-}
-```
-
-## 如果你配置了模型映射
-
-例如渠道里这样映射：
-
-```json
-{
-  "gemini-3-pro-image": "nano-banana-pro"
-}
-```
-
-那么价格必须按用户请求模型名 `gemini-3-pro-image` 配，而不是按 `nano-banana-pro` 配：
-
-```json
-{
-  "gemini-3-pro-image": 0.1,
-  "gemini-3-pro-image@1k": 0.1,
-  "gemini-3-pro-image@2k": 0.15,
-  "gemini-3-pro-image@4k": 0.2
-}
-```
-
-如果只配置 `nano-banana-pro@4k`，但用户调用 `gemini-3-pro-image`，系统会找不到价格并报错。
-
-## 请求参数和价格 key 对应关系
-
-### gpt-image-2
-
-请求示例：
-
-```json
-{
-  "model": "gpt-image-2",
-  "prompt": "一张产品海报",
-  "resolution": "4K",
-  "quality": "high",
-  "n": 2
-}
-```
-
-命中的价格 key：
-
-```text
-gpt-image-2@4k@high
-```
-
-计费：
-
-```text
-0.3 * 2 = 0.6
-```
-
-### Nano Banana 系列
-
-请求示例：
-
-```json
-{
-  "model": "nano-banana-pro",
-  "prompt": "一张产品海报",
-  "resolution": "2K",
-  "aspect_ratio": "16:9",
-  "n": 3
-}
-```
-
-命中的价格 key：
-
-```text
-nano-banana-pro@2k
-```
-
-计费：
-
-```text
-0.15 * 3 = 0.45
-```
-
-## 常见错误
-
-如果返回：
-
-```json
-{
-  "message": "model price is required for gemini-3-pro-image@4k"
-}
-```
-
-说明当前用户请求模型是 `gemini-3-pro-image`，并且清晰度被识别为 `4k`，但 `ModelPrice` 里没有配置：
-
-```json
-{
-  "gemini-3-pro-image@4k": 0.2
-}
-```
-
-补上对应 key 后保存即可。
+- Nano 系列按官方像素 `size` 识别 `1k`、`2k`、`4k` 档位。
+- `gpt-image-2` 按 `quality` 和 `output_psd` 识别价格 key，省略 `quality` 时按 `low`。
+- `n` 会作为输出数量倍率参与计费；不传时按 `1`。
+- 如果渠道模型映射使用公开模型名，公开模型名没有单独配置价格时，适配器会回退到映射后的上游模型价格。

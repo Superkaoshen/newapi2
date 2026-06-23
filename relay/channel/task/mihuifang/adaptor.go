@@ -145,18 +145,23 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	if isMultipartEditRequest(c, info) {
 		return buildMultipartRequestBody(c, upstreamModel)
 	}
+	images := requestImages(req)
+	if err := validateImageInputLimit(upstreamModel, len(images)+len(req.ReferenceImages)); err != nil {
+		return nil, err
+	}
 	body := map[string]interface{}{
 		"model":  upstreamModel,
 		"prompt": req.Prompt,
 	}
-	if images := requestImages(req); len(images) > 0 {
+	if len(images) > 0 {
 		body["image"] = images
 	}
 	if len(req.ReferenceImages) > 0 {
 		body["reference_images"] = req.ReferenceImages
 	}
-	setString(body, "size", req.Size)
-	setString(body, "quality", req.Quality)
+	if err := setImageRequestOptions(body, upstreamModel, req); err != nil {
+		return nil, err
+	}
 	setString(body, "response_format", req.ResponseFormat)
 	if len(req.Mask) > 0 {
 		body["mask"] = req.Mask
@@ -343,10 +348,200 @@ func requestImages(req relaycommon.TaskSubmitReq) []string {
 	return uniqueStrings(images)
 }
 
+type aiAPIProSizeSpec struct {
+	Aspect   string
+	Tier     string
+	Size     string
+	Extended bool
+}
+
+var aiAPIProSizeSpecs = []aiAPIProSizeSpec{
+	{Aspect: "21:9", Tier: "1k", Size: "1584x672"},
+	{Aspect: "16:9", Tier: "1k", Size: "1376x768"},
+	{Aspect: "3:2", Tier: "1k", Size: "1264x848"},
+	{Aspect: "4:3", Tier: "1k", Size: "1200x896"},
+	{Aspect: "5:4", Tier: "1k", Size: "1152x928"},
+	{Aspect: "1:1", Tier: "1k", Size: "1024x1024"},
+	{Aspect: "4:5", Tier: "1k", Size: "928x1152"},
+	{Aspect: "3:4", Tier: "1k", Size: "896x1200"},
+	{Aspect: "2:3", Tier: "1k", Size: "848x1264"},
+	{Aspect: "9:16", Tier: "1k", Size: "768x1376"},
+	{Aspect: "21:9", Tier: "2k", Size: "3168x1344"},
+	{Aspect: "16:9", Tier: "2k", Size: "2752x1536"},
+	{Aspect: "3:2", Tier: "2k", Size: "2528x1696"},
+	{Aspect: "4:3", Tier: "2k", Size: "2400x1792"},
+	{Aspect: "5:4", Tier: "2k", Size: "2304x1856"},
+	{Aspect: "1:1", Tier: "2k", Size: "2048x2048"},
+	{Aspect: "4:5", Tier: "2k", Size: "1856x2304"},
+	{Aspect: "3:4", Tier: "2k", Size: "1792x2400"},
+	{Aspect: "2:3", Tier: "2k", Size: "1696x2528"},
+	{Aspect: "9:16", Tier: "2k", Size: "1536x2752"},
+	{Aspect: "21:9", Tier: "4k", Size: "6336x2688"},
+	{Aspect: "16:9", Tier: "4k", Size: "5504x3072"},
+	{Aspect: "3:2", Tier: "4k", Size: "5056x3392"},
+	{Aspect: "4:3", Tier: "4k", Size: "4800x3584"},
+	{Aspect: "5:4", Tier: "4k", Size: "4608x3712"},
+	{Aspect: "1:1", Tier: "4k", Size: "4096x4096"},
+	{Aspect: "4:5", Tier: "4k", Size: "3712x4608"},
+	{Aspect: "3:4", Tier: "4k", Size: "3584x4800"},
+	{Aspect: "2:3", Tier: "4k", Size: "3392x5056"},
+	{Aspect: "9:16", Tier: "4k", Size: "3072x5504"},
+	{Aspect: "8:1", Tier: "1k", Size: "3072x384", Extended: true},
+	{Aspect: "4:1", Tier: "1k", Size: "2048x512", Extended: true},
+	{Aspect: "1:4", Tier: "1k", Size: "512x2048", Extended: true},
+	{Aspect: "1:8", Tier: "1k", Size: "384x3072", Extended: true},
+	{Aspect: "8:1", Tier: "2k", Size: "6144x768", Extended: true},
+	{Aspect: "4:1", Tier: "2k", Size: "4096x1024", Extended: true},
+	{Aspect: "1:4", Tier: "2k", Size: "1024x4096", Extended: true},
+	{Aspect: "1:8", Tier: "2k", Size: "768x6144", Extended: true},
+	{Aspect: "8:1", Tier: "4k", Size: "12288x1536", Extended: true},
+	{Aspect: "4:1", Tier: "4k", Size: "8192x2048", Extended: true},
+	{Aspect: "1:4", Tier: "4k", Size: "2048x8192", Extended: true},
+	{Aspect: "1:8", Tier: "4k", Size: "1536x12288", Extended: true},
+}
+
+var aiAPIProSizeByPixels, aiAPIProSizeByAspectTier = buildAIAPIProSizeIndexes()
+
+func buildAIAPIProSizeIndexes() (map[string]aiAPIProSizeSpec, map[string]map[string]aiAPIProSizeSpec) {
+	byPixels := make(map[string]aiAPIProSizeSpec, len(aiAPIProSizeSpecs))
+	byAspectTier := make(map[string]map[string]aiAPIProSizeSpec, len(aiAPIProSizeSpecs))
+	for _, spec := range aiAPIProSizeSpecs {
+		byPixels[spec.Size] = spec
+		if byAspectTier[spec.Aspect] == nil {
+			byAspectTier[spec.Aspect] = make(map[string]aiAPIProSizeSpec)
+		}
+		byAspectTier[spec.Aspect][spec.Tier] = spec
+	}
+	return byPixels, byAspectTier
+}
+
+func setImageRequestOptions(body map[string]interface{}, upstreamModel string, req relaycommon.TaskSubmitReq) error {
+	size, quality, err := normalizedImageRequestOptions(upstreamModel, req)
+	if err != nil {
+		return err
+	}
+	setString(body, "size", size)
+	setString(body, "quality", quality)
+	return nil
+}
+
+func normalizedImageRequestOptions(upstreamModel string, req relaycommon.TaskSubmitReq) (string, string, error) {
+	upstreamModel = normalizeMihuifangModel(upstreamModel)
+	size, tier, err := normalizeUpstreamImageSize(upstreamModel, req.Size, req.AspectRatio, req.Resolution)
+	if err != nil {
+		return "", "", err
+	}
+	quality := strings.ToLower(strings.TrimSpace(req.Quality))
+	if upstreamModel == "gpt-image-2" {
+		if quality != "" && quality != "low" && quality != "medium" && quality != "high" {
+			return "", "", fmt.Errorf("unsupported quality for gpt-image-2: %s", req.Quality)
+		}
+		return size, quality, nil
+	}
+	if size != "" {
+		return size, nanoQualityForTier(tier), nil
+	}
+	if quality != "" && quality != "standard" && quality != "hd" {
+		return "", "", fmt.Errorf("unsupported quality for %s: %s", upstreamModel, req.Quality)
+	}
+	return "", quality, nil
+}
+
+func normalizeUpstreamImageSize(upstreamModel, size, aspectRatio, resolution string) (string, string, error) {
+	upstreamModel = normalizeMihuifangModel(upstreamModel)
+	rawSize := strings.TrimSpace(size)
+	rawAspect := strings.TrimSpace(aspectRatio)
+	rawResolution := strings.TrimSpace(resolution)
+	if rawSize == "" && rawAspect == "" && rawResolution == "" {
+		return "", "", nil
+	}
+	if strings.EqualFold(rawSize, "auto") && rawAspect == "" && rawResolution == "" {
+		return "", "", nil
+	}
+	if w, h, ok := parsePixels(rawSize); ok {
+		pixelSize := fmt.Sprintf("%dx%d", w, h)
+		if spec, ok := aiAPIProSizeByPixels[pixelSize]; ok {
+			if !isImageSizeSupportedByModel(upstreamModel, spec) {
+				return "", "", fmt.Errorf("%s does not support ratio %s", upstreamModel, spec.Aspect)
+			}
+			return pixelSize, spec.Tier, nil
+		}
+		if upstreamModel == "gpt-image-2" {
+			return pixelSize, "", nil
+		}
+		return "", "", fmt.Errorf("unsupported size for %s: %s", upstreamModel, rawSize)
+	}
+
+	tier := imageTierFromText(firstNonEmpty(rawSize, rawResolution))
+	aspect := firstNonEmpty(imageAspectFromText(rawSize), imageAspectFromText(rawAspect))
+	if aspect == "" && tier != "" {
+		aspect = "1:1"
+	}
+	if tier == "" {
+		tier = "1k"
+	}
+	if aspect == "" {
+		return "", "", fmt.Errorf("unsupported size for %s: %s", upstreamModel, firstNonEmpty(rawSize, rawAspect, rawResolution))
+	}
+	specsByTier, ok := aiAPIProSizeByAspectTier[aspect]
+	if !ok {
+		return "", "", fmt.Errorf("unsupported ratio for %s: %s", upstreamModel, aspect)
+	}
+	spec, ok := specsByTier[tier]
+	if !ok {
+		return "", "", fmt.Errorf("unsupported size tier for %s: %s", upstreamModel, tier)
+	}
+	if !isImageSizeSupportedByModel(upstreamModel, spec) {
+		return "", "", fmt.Errorf("%s does not support ratio %s", upstreamModel, spec.Aspect)
+	}
+	return spec.Size, spec.Tier, nil
+}
+
+func isImageSizeSupportedByModel(upstreamModel string, spec aiAPIProSizeSpec) bool {
+	upstreamModel = normalizeMihuifangModel(upstreamModel)
+	if upstreamModel == "gpt-image-2" || upstreamModel == "nanobanana2" {
+		return true
+	}
+	return !spec.Extended
+}
+
+func nanoQualityForTier(tier string) string {
+	if strings.EqualFold(tier, "1k") {
+		return "standard"
+	}
+	return "hd"
+}
+
+func validateImageInputLimit(upstreamModel string, count int) error {
+	limit := imageInputLimit(upstreamModel)
+	if limit <= 0 || count <= limit {
+		return nil
+	}
+	return fmt.Errorf("%s supports at most %d input images", normalizeMihuifangModel(upstreamModel), limit)
+}
+
+func imageInputLimit(upstreamModel string) int {
+	switch normalizeMihuifangModel(upstreamModel) {
+	case "nanobanana":
+		return 4
+	case "nanobanana2", "nanobananapro", "gpt-image-2":
+		return 6
+	default:
+		return 0
+	}
+}
+
 func buildMultipartRequestBody(c *gin.Context, upstreamModel string) (io.Reader, error) {
 	form, err := common.ParseMultipartFormReusable(c)
 	if err != nil {
 		return nil, fmt.Errorf("parse multipart form failed: %w", err)
+	}
+	fields, err := normalizeMultipartFields(form.Value, upstreamModel)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateImageInputLimit(upstreamModel, countMultipartImageInputs(fields, form.File)); err != nil {
+		return nil, err
 	}
 
 	var requestBody bytes.Buffer
@@ -364,23 +559,9 @@ func buildMultipartRequestBody(c *gin.Context, upstreamModel string) (io.Reader,
 		return nil
 	}
 
-	for key, values := range form.Value {
-		if key == "model" {
-			continue
-		}
-		switch key {
-		case "images", "image[]":
-			if err := writeValues("image", values); err != nil {
-				return nil, err
-			}
-		case "referenceImages":
-			if err := writeValues("reference_images", values); err != nil {
-				return nil, err
-			}
-		default:
-			if err := writeValues(key, values); err != nil {
-				return nil, err
-			}
+	for key, values := range fields {
+		if err := writeValues(key, values); err != nil {
+			return nil, err
 		}
 	}
 
@@ -400,15 +581,90 @@ func buildMultipartRequestBody(c *gin.Context, upstreamModel string) (io.Reader,
 	return &requestBody, nil
 }
 
-func normalizeMultipartFileField(fieldName string) string {
+func normalizeMultipartFields(values map[string][]string, upstreamModel string) (map[string][]string, error) {
+	fields := make(map[string][]string, len(values))
+	for key, fieldValues := range values {
+		if key == "model" {
+			continue
+		}
+		upstreamField := normalizeMultipartValueField(key)
+		fields[upstreamField] = append(fields[upstreamField], fieldValues...)
+	}
+	req := relaycommon.TaskSubmitReq{
+		Size:           firstFieldValue(fields, "size"),
+		Quality:        firstFieldValue(fields, "quality"),
+		AspectRatio:    firstFieldValue(fields, "aspect_ratio"),
+		Resolution:     firstFieldValue(fields, "resolution"),
+		ResponseFormat: firstFieldValue(fields, "response_format"),
+	}
+	delete(fields, "size")
+	delete(fields, "quality")
+	delete(fields, "aspect_ratio")
+	delete(fields, "resolution")
+
+	size, quality, err := normalizedImageRequestOptions(upstreamModel, req)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(size) != "" {
+		fields["size"] = []string{size}
+	}
+	if strings.TrimSpace(quality) != "" {
+		fields["quality"] = []string{quality}
+	}
+	return fields, nil
+}
+
+func normalizeMultipartValueField(fieldName string) string {
 	switch {
 	case fieldName == "images" || fieldName == "image[]" || strings.HasPrefix(fieldName, "image["):
 		return "image"
-	case fieldName == "referenceImages":
+	case fieldName == "referenceImages" || fieldName == "input_images":
 		return "reference_images"
 	default:
 		return fieldName
 	}
+}
+
+func normalizeMultipartFileField(fieldName string) string {
+	switch {
+	case fieldName == "images" || fieldName == "image[]" || strings.HasPrefix(fieldName, "image["):
+		return "image"
+	case fieldName == "referenceImages" || fieldName == "input_images":
+		return "reference_images"
+	default:
+		return fieldName
+	}
+}
+
+func firstFieldValue(fields map[string][]string, key string) string {
+	for _, value := range fields[key] {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func countMultipartImageInputs(fields map[string][]string, files map[string][]*multipart.FileHeader) int {
+	count := countNonEmptyStrings(fields["image"]) + countNonEmptyStrings(fields["reference_images"])
+	for fieldName, fieldFiles := range files {
+		switch normalizeMultipartFileField(fieldName) {
+		case "image", "reference_images":
+			count += len(fieldFiles)
+		}
+	}
+	return count
+}
+
+func countNonEmptyStrings(values []string) int {
+	count := 0
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			count++
+		}
+	}
+	return count
 }
 
 func copyMultipartFile(writer *multipart.Writer, fieldName string, fileHeader *multipart.FileHeader) error {
@@ -717,7 +973,7 @@ func imageSizeRatio(size, resolution string) float64 {
 }
 
 func imageSizeTier(size, resolution string) string {
-	text := strings.ToLower(strings.TrimSpace(firstNonEmpty(resolution, size)))
+	text := strings.ToLower(strings.TrimSpace(firstNonEmpty(size, resolution)))
 	if text == "" {
 		return "1k"
 	}
@@ -731,6 +987,9 @@ func imageSizeTier(size, resolution string) string {
 		return "1k"
 	}
 	if w, h, ok := parsePixels(text); ok {
+		if spec, ok := aiAPIProSizeByPixels[fmt.Sprintf("%dx%d", w, h)]; ok {
+			return spec.Tier
+		}
 		maxSide := w
 		if h > maxSide {
 			maxSide = h
@@ -746,6 +1005,30 @@ func imageSizeTier(size, resolution string) string {
 }
 
 var pixelSizeRe = regexp.MustCompile(`(?i)(\d{3,5})\s*x\s*(\d{3,5})`)
+var aspectRatioRe = regexp.MustCompile(`(?i)(^|[^0-9])(\d{1,2})\s*[:x]\s*(\d{1,2})([^0-9]|$)`)
+
+func imageTierFromText(text string) string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	switch {
+	case strings.Contains(text, "4k"):
+		return "4k"
+	case strings.Contains(text, "2k"):
+		return "2k"
+	case strings.Contains(text, "1k"):
+		return "1k"
+	default:
+		return ""
+	}
+}
+
+func imageAspectFromText(text string) string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	matches := aspectRatioRe.FindStringSubmatch(text)
+	if len(matches) != 5 {
+		return ""
+	}
+	return matches[2] + ":" + matches[3]
+}
 
 func parsePixels(s string) (int, int, bool) {
 	matches := pixelSizeRe.FindStringSubmatch(s)
