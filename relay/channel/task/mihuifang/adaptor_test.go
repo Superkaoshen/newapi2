@@ -251,6 +251,35 @@ func TestDoResponseUsesOriginModelName(t *testing.T) {
 	}
 }
 
+func TestDoResponseAcceptsStringTaskOrderID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("task_request", relaycommon.TaskSubmitReq{Model: "nanobanana"})
+
+	resp := &http.Response{
+		StatusCode: http.StatusCreated,
+		Body:       io.NopCloser(strings.NewReader(`{"taskOrderId":"2069392637227798530","requestId":"upstream","status":"created","billingStatus":"pending","progress":0}`)),
+	}
+	info := &relaycommon.RelayInfo{
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+		OriginModelName: "nanobanana",
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "nanobanana"},
+	}
+
+	_, taskData, taskErr := (&TaskAdaptor{}).DoResponse(c, resp, info)
+	if taskErr != nil {
+		t.Fatalf("DoResponse taskErr = %v", taskErr)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"taskOrderId":"2069392637227798530"`) {
+		t.Fatalf("response body = %s, want string taskOrderId preserved", body)
+	}
+	if !strings.Contains(string(taskData), `"taskOrderId":"2069392637227798530"`) {
+		t.Fatalf("task data = %s, want string taskOrderId preserved", taskData)
+	}
+}
+
 func TestParseTaskResultDropsUpstreamModelName(t *testing.T) {
 	body := `{"requestId":"upstream","status":"processing","modelCode":"nanobananapro","modelName":"frefly-nano-banana-1k-1x1","progress":25}`
 	ti, err := (&TaskAdaptor{}).ParseTaskResult([]byte(body))

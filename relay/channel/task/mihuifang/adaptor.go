@@ -2,6 +2,7 @@ package mihuifang
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -33,7 +34,7 @@ type TaskAdaptor struct {
 }
 
 type aiAPIProTaskResponse struct {
-	TaskOrderID   int64                  `json:"taskOrderId,omitempty"`
+	TaskOrderID   json.RawMessage        `json:"taskOrderId,omitempty"`
 	RequestID     string                 `json:"requestId,omitempty"`
 	ModelCode     string                 `json:"modelCode,omitempty"`
 	ModelName     string                 `json:"modelName,omitempty"`
