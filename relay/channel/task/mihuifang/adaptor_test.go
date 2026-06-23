@@ -263,6 +263,17 @@ func TestParseTaskResultDropsUpstreamModelName(t *testing.T) {
 	assertNoUpstreamModelName(t, string(ti.Data))
 }
 
+func TestParseTaskResultTreatsCreatedAsQueued(t *testing.T) {
+	body := `{"requestId":"upstream","status":"created","billingStatus":"pending","progress":0}`
+	ti, err := (&TaskAdaptor{}).ParseTaskResult([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseTaskResult error = %v", err)
+	}
+	if ti.Status != model.TaskStatusQueued {
+		t.Fatalf("status = %s, want %s", ti.Status, model.TaskStatusQueued)
+	}
+}
+
 func TestDoResponseOSSFailureDoesNotReturnRawURL(t *testing.T) {
 	oldOptions := snapshotOSSOptions()
 	defer restoreOSSOptions(oldOptions)

@@ -240,7 +240,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if err != nil {
 		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
-	if resp != nil && resp.StatusCode != http.StatusOK {
+	if resp != nil && !isHTTPSuccessStatus(resp.StatusCode) {
 		responseBody, _ := io.ReadAll(resp.Body)
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
 	}
@@ -486,7 +486,7 @@ func tryUpdateAsyncImageTask(task *model.Task) error {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if !isHTTPSuccessStatus(resp.StatusCode) {
 		return fmt.Errorf("fetch async image task status code: %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(resp.Body)
@@ -517,6 +517,10 @@ func tryUpdateAsyncImageTask(task *model.Task) error {
 		}
 	}
 	return nil
+}
+
+func isHTTPSuccessStatus(statusCode int) bool {
+	return statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices
 }
 
 func applyTaskInfoToAsyncImageTask(task *model.Task, taskResult *relaycommon.TaskInfo, fallbackBody []byte) {

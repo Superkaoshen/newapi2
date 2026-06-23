@@ -247,7 +247,7 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	ti := &relaycommon.TaskInfo{TaskID: resp.RequestID}
 	status := strings.ToLower(resp.Status)
 	switch status {
-	case "pending", "queued", "submitted":
+	case "created", "pending", "queued", "submitted":
 		ti.Status = model.TaskStatusQueued
 	case "processing", "in_progress", "running":
 		ti.Status = model.TaskStatusInProgress
