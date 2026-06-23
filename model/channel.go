@@ -806,6 +806,7 @@ func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *
 		updatedTag = *newTag
 	}
 	if modelMapping != nil {
+		shouldReCreateAbilities = true
 		updateData.ModelMapping = modelMapping
 	}
 	if models != nil && *models != "" {

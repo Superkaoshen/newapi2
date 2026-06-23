@@ -194,8 +194,9 @@ function buildDetailSegments(
   } else {
     const isPerCall = isPerCallBilling(other.model_price)
     if (isPerCall) {
+      const price = other.effective_model_price ?? other.model_price!
       segments.push({
-        text: `${t('Per-call')} · ${formatBillingCurrencyFromUSD(other.model_price!, priceOpts)}`,
+        text: `${t('Per-call')} · ${formatBillingCurrencyFromUSD(price, priceOpts)}`,
       })
     } else if (other.model_ratio != null) {
       const inputPriceUSD = other.model_ratio * 2.0

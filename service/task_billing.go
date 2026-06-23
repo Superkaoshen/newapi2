@@ -39,8 +39,16 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
 	other["is_task"] = true
 	other["request_path"] = c.Request.URL.Path
 	other["model_price"] = info.PriceData.ModelPrice
+	if effectivePrice := taskEffectiveModelPrice(info.PriceData.ModelPrice, info.PriceData.OtherRatios); effectivePrice > 0 {
+		other["effective_model_price"] = effectivePrice
+	}
 	if info.PriceData.ModelRatio > 0 {
 		other["model_ratio"] = info.PriceData.ModelRatio
+	}
+	if len(info.PriceData.OtherRatios) > 0 {
+		for k, v := range info.PriceData.OtherRatios {
+			other[k] = v
+		}
 	}
 	other["group_ratio"] = info.PriceData.GroupRatioInfo.GroupRatio
 	if info.PriceData.GroupRatioInfo.HasSpecialRatio {
@@ -62,6 +70,19 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
 	})
 	model.UpdateUserUsedQuotaAndRequestCount(info.UserId, info.PriceData.Quota)
 	model.UpdateChannelUsedQuota(info.ChannelId, info.PriceData.Quota)
+}
+
+func taskEffectiveModelPrice(modelPrice float64, otherRatios map[string]float64) float64 {
+	if modelPrice <= 0 {
+		return 0
+	}
+	effectivePrice := modelPrice
+	for _, ratio := range otherRatios {
+		if ratio > 0 {
+			effectivePrice *= ratio
+		}
+	}
+	return effectivePrice
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +142,9 @@ func taskBillingOther(task *model.Task) map[string]interface{} {
 	other := make(map[string]interface{})
 	if bc := task.PrivateData.BillingContext; bc != nil {
 		other["model_price"] = bc.ModelPrice
+		if effectivePrice := taskEffectiveModelPrice(bc.ModelPrice, bc.OtherRatios); effectivePrice > 0 {
+			other["effective_model_price"] = effectivePrice
+		}
 		if bc.ModelRatio > 0 {
 			other["model_ratio"] = bc.ModelRatio
 		}

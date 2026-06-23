@@ -86,15 +86,16 @@ func validateMultipartTaskRequest(c *gin.Context, info *RelayInfo, action string
 
 	formData := c.Request.PostForm
 	req = TaskSubmitReq{
-		Prompt:      formData.Get("prompt"),
-		Model:       formData.Get("model"),
-		Mode:        formData.Get("mode"),
-		Image:       formData.Get("image"),
-		Size:        formData.Get("size"),
-		Quality:     formData.Get("quality"),
-		AspectRatio: formData.Get("aspect_ratio"),
-		Resolution:  formData.Get("resolution"),
-		Metadata:    make(map[string]interface{}),
+		Prompt:         formData.Get("prompt"),
+		Model:          formData.Get("model"),
+		Mode:           formData.Get("mode"),
+		Image:          formData.Get("image"),
+		Size:           formData.Get("size"),
+		Quality:        formData.Get("quality"),
+		ResponseFormat: formData.Get("response_format"),
+		AspectRatio:    formData.Get("aspect_ratio"),
+		Resolution:     formData.Get("resolution"),
+		Metadata:       make(map[string]interface{}),
 	}
 	if nStr := formData.Get("n"); nStr != "" {
 		if n, err := strconv.Atoi(nStr); err == nil {
@@ -116,6 +117,13 @@ func validateMultipartTaskRequest(c *gin.Context, info *RelayInfo, action string
 	}
 	if images := formData["reference_images"]; len(images) > 0 {
 		req.ReferenceImages = images
+	}
+	if mask := formData.Get("mask"); mask != "" {
+		req.Mask = []byte(strconv.Quote(mask))
+	}
+	if outputPSDStr := formData.Get("output_psd"); outputPSDStr != "" {
+		outputPSD := outputPSDStr == "true" || outputPSDStr == "1"
+		req.OutputPSD = &outputPSD
 	}
 
 	for key, values := range formData {

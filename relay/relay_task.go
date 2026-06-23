@@ -187,8 +187,17 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 
 	// 4. 价格计算：基础模型价格
-	info.OriginModelName = modelName
+	billingModelName := modelName
+	if resolver, ok := adaptor.(interface {
+		ResolveBillingModelName(info *relaycommon.RelayInfo) string
+	}); ok {
+		if resolved := strings.TrimSpace(resolver.ResolveBillingModelName(info)); resolved != "" {
+			billingModelName = resolved
+		}
+	}
+	info.OriginModelName = billingModelName
 	priceData, err := helper.ModelPriceHelperPerCall(c, info)
+	info.OriginModelName = modelName
 	if err != nil {
 		return nil, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest)
 	}

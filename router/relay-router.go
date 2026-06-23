@@ -117,6 +117,7 @@ func SetRelayRouter(router *gin.Engine) {
 		})
 		httpRouter.POST("/async/generations", controller.RelayTask)
 		httpRouter.GET("/async/generations/:task_id", controller.RelayTaskFetch)
+		httpRouter.GET("/tasks/:task_id", controller.RelayTaskFetch)
 
 		// embedding related routes
 		httpRouter.POST("/embeddings", func(c *gin.Context) {

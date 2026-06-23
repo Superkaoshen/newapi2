@@ -184,6 +184,14 @@ func countLogs(t *testing.T) int64 {
 	return count
 }
 
+func TestTaskEffectiveModelPriceIncludesImageTierAndCount(t *testing.T) {
+	got := taskEffectiveModelPrice(0.1, map[string]float64{
+		"price_tier": 2,
+		"n":          3,
+	})
+	assert.InDelta(t, 0.6, got, 0.000001)
+}
+
 // ===========================================================================
 // RefundTaskQuota tests
 // ===========================================================================

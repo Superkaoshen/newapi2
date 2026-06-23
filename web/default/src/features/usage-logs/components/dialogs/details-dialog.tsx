@@ -178,11 +178,29 @@ function BillingBreakdown(props: {
     }
   } else if (isPerCall) {
     rows.push({ label: t('Billing Mode'), value: t('Per-call') })
+    if (other.effective_model_price != null) {
+      rows.push({
+        label: t('Actual Price'),
+        value: fmtPrice(other.effective_model_price),
+      })
+    }
     if (other.model_price != null) {
       rows.push({
-        label: t('Model Price'),
+        label:
+          other.effective_model_price != null
+            ? t('Base Price')
+            : t('Model Price'),
         value: fmtPrice(other.model_price),
       })
+    }
+    if (other.price_tier != null && other.price_tier !== 1) {
+      rows.push({
+        label: t('Price Tier'),
+        value: `${formatRatio(other.price_tier)}x`,
+      })
+    }
+    if (other.n != null && other.n !== 1) {
+      rows.push({ label: t('Quantity'), value: `${formatRatio(other.n)}x` })
     }
   } else {
     rows.push({ label: t('Billing Mode'), value: t('Per-token') })

@@ -144,8 +144,8 @@ func GetChannel(group string, model string, retry int) (*Channel, error) {
 }
 
 func (channel *Channel) AddAbilities(tx *gorm.DB) error {
-	models_ := strings.Split(channel.Models, ",")
-	groups_ := strings.Split(channel.Group, ",")
+	models_ := channelAbilityModels(channel)
+	groups_ := channelAbilityGroups(channel)
 	abilitySet := make(map[string]struct{})
 	abilities := make([]Ability, 0, len(models_))
 	for _, model := range models_ {
@@ -216,8 +216,8 @@ func (channel *Channel) UpdateAbilities(tx *gorm.DB) error {
 	}
 
 	// Then add new abilities
-	models_ := strings.Split(channel.Models, ",")
-	groups_ := strings.Split(channel.Group, ",")
+	models_ := channelAbilityModels(channel)
+	groups_ := channelAbilityGroups(channel)
 	abilitySet := make(map[string]struct{})
 	abilities := make([]Ability, 0, len(models_))
 	for _, model := range models_ {
@@ -258,6 +258,67 @@ func (channel *Channel) UpdateAbilities(tx *gorm.DB) error {
 	}
 
 	return nil
+}
+
+func channelAbilityModels(channel *Channel) []string {
+	if channel == nil {
+		return nil
+	}
+	models := splitNonEmptyCSV(channel.Models)
+	modelMapping := strings.TrimSpace(channel.GetModelMapping())
+	if modelMapping == "" || modelMapping == "{}" {
+		return uniqueNonEmptyStrings(models)
+	}
+	var mappings map[string]string
+	if err := common.UnmarshalJsonStr(modelMapping, &mappings); err != nil {
+		return uniqueNonEmptyStrings(models)
+	}
+	for source, target := range mappings {
+		source = strings.TrimSpace(source)
+		target = strings.TrimSpace(target)
+		if source == "" || target == "" {
+			continue
+		}
+		models = append(models, source)
+	}
+	return uniqueNonEmptyStrings(models)
+}
+
+func channelAbilityGroups(channel *Channel) []string {
+	if channel == nil {
+		return nil
+	}
+	return splitNonEmptyCSV(channel.Group)
+}
+
+func splitNonEmptyCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func UpdateAbilityStatus(channelId int, status bool) error {

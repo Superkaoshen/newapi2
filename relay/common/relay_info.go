@@ -690,6 +690,9 @@ type TaskSubmitReq struct {
 	ReferenceImages []string               `json:"referenceImages,omitempty"`
 	Size            string                 `json:"size,omitempty"`
 	Quality         string                 `json:"quality,omitempty"`
+	ResponseFormat  string                 `json:"response_format,omitempty"`
+	Mask            json.RawMessage        `json:"mask,omitempty"`
+	OutputPSD       *bool                  `json:"output_psd,omitempty"`
 	AspectRatio     string                 `json:"aspect_ratio,omitempty"`
 	Resolution      string                 `json:"resolution,omitempty"`
 	N               int                    `json:"n,omitempty"`
@@ -708,18 +711,75 @@ func (t *TaskSubmitReq) HasImage() bool {
 }
 
 func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
-	type Alias TaskSubmitReq
 	aux := &struct {
-		Metadata        json.RawMessage `json:"metadata,omitempty"`
-		Duration        json.RawMessage `json:"duration,omitempty"`
-		ReferenceImages []string        `json:"reference_images,omitempty"`
-		*Alias
-	}{
-		Alias: (*Alias)(t),
-	}
+		Prompt               string                 `json:"prompt"`
+		Model                string                 `json:"model,omitempty"`
+		Mode                 string                 `json:"mode,omitempty"`
+		Image                json.RawMessage        `json:"image,omitempty"`
+		Images               []string               `json:"images,omitempty"`
+		ReferenceImages      []string               `json:"referenceImages,omitempty"`
+		ReferenceImagesSnake []string               `json:"reference_images,omitempty"`
+		Size                 string                 `json:"size,omitempty"`
+		Quality              string                 `json:"quality,omitempty"`
+		ResponseFormat       string                 `json:"response_format,omitempty"`
+		Mask                 json.RawMessage        `json:"mask,omitempty"`
+		OutputPSD            json.RawMessage        `json:"output_psd,omitempty"`
+		AspectRatio          string                 `json:"aspect_ratio,omitempty"`
+		Resolution           string                 `json:"resolution,omitempty"`
+		N                    int                    `json:"n,omitempty"`
+		Duration             json.RawMessage        `json:"duration,omitempty"`
+		Seconds              string                 `json:"seconds,omitempty"`
+		InputReference       string                 `json:"input_reference,omitempty"`
+		Metadata             json.RawMessage        `json:"metadata,omitempty"`
+		MetadataObj          map[string]interface{} `json:"-"`
+	}{}
 
 	if err := common.Unmarshal(data, &aux); err != nil {
 		return err
+	}
+
+	t.Prompt = aux.Prompt
+	t.Model = aux.Model
+	t.Mode = aux.Mode
+	t.Images = aux.Images
+	t.ReferenceImages = aux.ReferenceImages
+	t.Size = aux.Size
+	t.Quality = aux.Quality
+	t.ResponseFormat = aux.ResponseFormat
+	t.Mask = aux.Mask
+	t.AspectRatio = aux.AspectRatio
+	t.Resolution = aux.Resolution
+	t.N = aux.N
+	t.Seconds = aux.Seconds
+	t.InputReference = aux.InputReference
+
+	if len(aux.Image) > 0 && string(aux.Image) != "null" {
+		var imageStr string
+		if err := common.Unmarshal(aux.Image, &imageStr); err == nil {
+			t.Image = imageStr
+		} else {
+			var imageArr []string
+			if arrErr := common.Unmarshal(aux.Image, &imageArr); arrErr != nil {
+				return arrErr
+			}
+			t.Images = imageArr
+			if len(imageArr) > 0 {
+				t.Image = imageArr[0]
+			}
+		}
+	}
+	if len(aux.OutputPSD) > 0 && string(aux.OutputPSD) != "null" {
+		var outputPSD bool
+		if err := common.Unmarshal(aux.OutputPSD, &outputPSD); err == nil {
+			t.OutputPSD = &outputPSD
+		} else {
+			var outputPSDStr string
+			if strErr := common.Unmarshal(aux.OutputPSD, &outputPSDStr); strErr != nil {
+				return strErr
+			}
+			outputPSD = outputPSDStr == "true" || outputPSDStr == "1"
+			t.OutputPSD = &outputPSD
+		}
 	}
 
 	if len(aux.Duration) > 0 {
@@ -746,13 +806,15 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 			}
 		}
 
-		var metadataObj map[string]interface{}
-		if err := common.Unmarshal(aux.Metadata, &metadataObj); err == nil {
-			t.Metadata = metadataObj
+		if err := common.Unmarshal(aux.Metadata, &aux.MetadataObj); err == nil {
+			t.Metadata = aux.MetadataObj
 		}
 	}
-	if len(t.ReferenceImages) == 0 && len(aux.ReferenceImages) > 0 {
-		t.ReferenceImages = aux.ReferenceImages
+	if len(aux.ReferenceImagesSnake) > 0 {
+		t.ReferenceImages = append(t.ReferenceImages, aux.ReferenceImagesSnake...)
+	}
+	if strings.TrimSpace(t.Image) == "" && len(t.Images) > 0 {
+		t.Image = t.Images[0]
 	}
 
 	return nil

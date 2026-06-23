@@ -53,7 +53,7 @@ func TestParseTaskResultReplacesResultImagesWithOSSURLs(t *testing.T) {
 		"AliyunOssPublicBaseUrl":   "https://cdn.example.com",
 	})
 
-	body := `{"id":"upstream","status":"completed","result":{"image_url":"` + ts.URL + `/a.png","image_urls":["` + ts.URL + `/b.png"],"url":"` + ts.URL + `/c.png"},"url":"` + ts.URL + `/d.png"}`
+	body := `{"requestId":"upstream","status":"succeeded","result":{"items":[{"url":"` + ts.URL + `/a.png","type":"image"},{"url":"` + ts.URL + `/b.psd","type":"document"}]}}`
 	ti, err := (&TaskAdaptor{}).ParseTaskResult([]byte(body))
 	if err != nil {
 		t.Fatalf("ParseTaskResult error = %v", err)
@@ -61,8 +61,8 @@ func TestParseTaskResultReplacesResultImagesWithOSSURLs(t *testing.T) {
 	if ti.Status != model.TaskStatusSuccess {
 		t.Fatalf("status = %s, want %s, reason=%s", ti.Status, model.TaskStatusSuccess, ti.Reason)
 	}
-	if uploaded != 4 {
-		t.Fatalf("uploaded = %d, want 4", uploaded)
+	if uploaded != 2 {
+		t.Fatalf("uploaded = %d, want 2", uploaded)
 	}
 	data := string(ti.Data)
 	if strings.Contains(data, ts.URL) {
@@ -92,8 +92,21 @@ func TestBuildRequestBodyAllowsMappedModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read body error = %v", err)
 	}
-	if !strings.Contains(string(data), `"model":"nano-banana-pro"`) {
+	if !strings.Contains(string(data), `"model":"nanobananapro"`) {
 		t.Fatalf("body = %s, want mapped upstream model", string(data))
+	}
+}
+
+func TestTaskSubmitReqAcceptsImageArray(t *testing.T) {
+	var req relaycommon.TaskSubmitReq
+	if err := common.Unmarshal([]byte(`{"model":"nanobanana","prompt":"draw","image":["https://example.com/a.png","https://example.com/b.png"]}`), &req); err != nil {
+		t.Fatalf("Unmarshal TaskSubmitReq error = %v", err)
+	}
+	if len(req.Images) != 2 {
+		t.Fatalf("images = %#v, want 2 items", req.Images)
+	}
+	if req.Image != "https://example.com/a.png" {
+		t.Fatalf("image = %q, want first array item", req.Image)
 	}
 }
 
@@ -105,7 +118,7 @@ func TestDoResponseUsesOriginModelName(t *testing.T) {
 
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(`{"id":"upstream","status":"pending","model":"nano-banana-pro"}`)),
+		Body:       io.NopCloser(strings.NewReader(`{"requestId":"upstream","status":"submitted","modelCode":"nanobananapro","modelName":"frefly-nano-banana-1k-1x1"}`)),
 	}
 	info := &relaycommon.RelayInfo{
 		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
@@ -113,16 +126,62 @@ func TestDoResponseUsesOriginModelName(t *testing.T) {
 		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "nano-banana-pro"},
 	}
 
-	_, _, taskErr := (&TaskAdaptor{}).DoResponse(c, resp, info)
+	_, taskData, taskErr := (&TaskAdaptor{}).DoResponse(c, resp, info)
 	if taskErr != nil {
 		t.Fatalf("DoResponse taskErr = %v", taskErr)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, `"model":"gemini-3-pro-image"`) {
+	if !strings.Contains(body, `"modelCode":"gemini-3-pro-image"`) {
 		t.Fatalf("response body = %s, want origin model", body)
 	}
-	if strings.Contains(body, `"model":"nano-banana-pro"`) {
+	if strings.Contains(body, `"modelCode":"nanobananapro"`) {
 		t.Fatalf("response body leaked upstream model: %s", body)
+	}
+	assertNoUpstreamModelName(t, body)
+	assertNoUpstreamModelName(t, string(taskData))
+	if !strings.Contains(body, `"requestId":"task_public"`) {
+		t.Fatalf("response body = %s, want public requestId", body)
+	}
+}
+
+func TestParseTaskResultDropsUpstreamModelName(t *testing.T) {
+	body := `{"requestId":"upstream","status":"processing","modelCode":"nanobananapro","modelName":"frefly-nano-banana-1k-1x1","progress":25}`
+	ti, err := (&TaskAdaptor{}).ParseTaskResult([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseTaskResult error = %v", err)
+	}
+	if ti.Status != model.TaskStatusInProgress {
+		t.Fatalf("status = %s, want %s", ti.Status, model.TaskStatusInProgress)
+	}
+	assertNoUpstreamModelName(t, string(ti.Data))
+}
+
+func TestDoResponseOSSFailureDoesNotReturnRawURL(t *testing.T) {
+	oldOptions := snapshotOSSOptions()
+	defer restoreOSSOptions(oldOptions)
+	setOSSOptions(map[string]string{"AliyunOssEnabled": "false"})
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("task_request", relaycommon.TaskSubmitReq{Model: "nanobanana"})
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"requestId":"upstream","status":"succeeded","result":{"items":[{"url":"https://raw.example.com/a.png","type":"image"}]}}`)),
+	}
+	info := &relaycommon.RelayInfo{
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+		OriginModelName: "nanobanana",
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "nanobanana"},
+	}
+
+	_, _, taskErr := (&TaskAdaptor{}).DoResponse(c, resp, info)
+	if taskErr == nil {
+		t.Fatalf("DoResponse taskErr = nil, want OSS failure")
+	}
+	if strings.Contains(w.Body.String(), "raw.example.com") {
+		t.Fatalf("response leaked upstream URL: %s", w.Body.String())
 	}
 }
 
@@ -134,15 +193,26 @@ func TestConvertStoredTaskUsesOriginModelName(t *testing.T) {
 			OriginModelName:   "gemini-3-pro-image",
 			UpstreamModelName: "nano-banana-pro",
 		},
-		Data: []byte(`{"id":"upstream","task_id":"upstream","object":"async.generation","type":"image","status":"completed","model":"nano-banana-pro","result":{"image_url":"https://oss.example.com/a.png"}}`),
+		Data: []byte(`{"requestId":"upstream","status":"succeeded","modelCode":"nanobananapro","modelName":"frefly-nano-banana-1k-1x1","result":{"items":[{"url":"https://oss.example.com/a.png","type":"image"}]}}`),
 	}
 
 	body := string(ConvertStoredTask(task))
-	if !strings.Contains(body, `"model":"gemini-3-pro-image"`) {
+	if !strings.Contains(body, `"modelCode":"gemini-3-pro-image"`) {
 		t.Fatalf("stored response = %s, want origin model", body)
 	}
-	if strings.Contains(body, `"model":"nano-banana-pro"`) {
+	if strings.Contains(body, `"modelCode":"nanobananapro"`) {
 		t.Fatalf("stored response leaked upstream model: %s", body)
+	}
+	assertNoUpstreamModelName(t, body)
+	if !strings.Contains(body, `"requestId":"task_public"`) {
+		t.Fatalf("stored response = %s, want public requestId", body)
+	}
+}
+
+func assertNoUpstreamModelName(t *testing.T, body string) {
+	t.Helper()
+	if strings.Contains(body, `"modelName"`) || strings.Contains(body, "frefly-nano-banana-1k-1x1") {
+		t.Fatalf("response leaked upstream modelName: %s", body)
 	}
 }
 
@@ -168,7 +238,7 @@ func TestParseTaskResultOSSFailureMarksTaskFailureWithoutRawURL(t *testing.T) {
 	defer restoreOSSOptions(oldOptions)
 	setOSSOptions(map[string]string{"AliyunOssEnabled": "false"})
 
-	body := `{"id":"upstream","status":"completed","result":{"image_url":"https://raw.example.com/a.png"}}`
+	body := `{"requestId":"upstream","status":"succeeded","result":{"items":[{"url":"https://raw.example.com/a.png","type":"image"}]}}`
 	ti, err := (&TaskAdaptor{}).ParseTaskResult([]byte(body))
 	if err != nil {
 		t.Fatalf("ParseTaskResult error = %v", err)
@@ -209,7 +279,7 @@ func TestEstimateBillingUsesMappedModelResolutionQualityAndCount(t *testing.T) {
 	defer func() { _ = ratio_setting.UpdateModelPriceByJSONString(oldPriceJSON) }()
 	if err := ratio_setting.UpdateModelPriceByJSONString(`{
 		"gemini-3-pro-image": 0.01,
-		"gemini-3-pro-image@4k@high": 0.08
+		"gemini-3-pro-image@high@psd": 0.08
 	}`); err != nil {
 		t.Fatalf("UpdateModelPriceByJSONString error = %v", err)
 	}
@@ -220,6 +290,7 @@ func TestEstimateBillingUsesMappedModelResolutionQualityAndCount(t *testing.T) {
 		Model:      "gemini-3-pro-image",
 		Resolution: "4K",
 		Quality:    "high",
+		OutputPSD:  common.GetPointer(true),
 		N:          2,
 	})
 	info := &relaycommon.RelayInfo{
@@ -239,6 +310,62 @@ func TestEstimateBillingUsesMappedModelResolutionQualityAndCount(t *testing.T) {
 	}
 }
 
+func TestEstimateBillingFallsBackToMappedUpstreamPrice(t *testing.T) {
+	oldPriceJSON := ratio_setting.ModelPrice2JSONString()
+	defer func() { _ = ratio_setting.UpdateModelPriceByJSONString(oldPriceJSON) }()
+	if err := ratio_setting.UpdateModelPriceByJSONString(`{
+		"nanobanana": 0.04,
+		"nanobanana@4k": 0.12
+	}`); err != nil {
+		t.Fatalf("UpdateModelPriceByJSONString error = %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:      "public-nano",
+		Resolution: "4K",
+	})
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "public-nano",
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "nanobanana"},
+	}
+
+	if got := (&TaskAdaptor{}).ResolveBillingModelName(info); got != "nanobanana" {
+		t.Fatalf("ResolveBillingModelName = %q, want nanobanana", got)
+	}
+	if err := (&TaskAdaptor{}).ValidateBilling(c, info); err != nil {
+		t.Fatalf("ValidateBilling error = %v", err)
+	}
+	ratios := (&TaskAdaptor{}).EstimateBilling(c, info)
+	if ratios["price_tier"] != 3 {
+		t.Fatalf("price_tier ratio = %v, want 3", ratios["price_tier"])
+	}
+}
+
+func TestDefaultMihuifangPricesAreDoubled(t *testing.T) {
+	defaultPrices := ratio_setting.GetDefaultModelPriceMap()
+	tests := map[string]float64{
+		"gpt-image-2":        0.1,
+		"gpt-image-2@high":   0.15,
+		"gpt-image-2@psd":    0.3,
+		"nanobanana":         0.04,
+		"nanobanana@4k":      0.12,
+		"nanobanana2@2k":     0.1,
+		"nanobananapro@4k":   0.2,
+		"nano-banana-pro@4k": 0.2,
+	}
+	for modelName, want := range tests {
+		got, ok := defaultPrices[modelName]
+		if !ok {
+			t.Fatalf("default price for %s is missing", modelName)
+		}
+		if got != want {
+			t.Fatalf("default price for %s = %v, want %v", modelName, got, want)
+		}
+	}
+}
+
 func TestValidateBillingRequiresTierPrice(t *testing.T) {
 	oldPriceJSON := ratio_setting.ModelPrice2JSONString()
 	defer func() { _ = ratio_setting.UpdateModelPriceByJSONString(oldPriceJSON) }()
@@ -254,7 +381,7 @@ func TestValidateBillingRequiresTierPrice(t *testing.T) {
 	})
 	info := &relaycommon.RelayInfo{
 		OriginModelName: "gemini-3-pro-image",
-		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "nano-banana-pro"},
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "unpriced-upstream"},
 	}
 
 	err := (&TaskAdaptor{}).ValidateBilling(c, info)

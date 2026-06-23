@@ -138,11 +138,11 @@ export const CHANNEL_TYPE_CONFIGS: Record<number, ChannelTypeConfig> = {
     id: 58,
     name: CHANNEL_TYPES[58],
     icon: 'openai',
-    defaultBaseUrl: 'https://mingyu.it.com',
+    defaultBaseUrl: 'https://aiapipro.vip',
     hints: {
       key: 'Mihuifang API Key',
-      models: 'gpt-image-2,nano-banana,nano-banana2,nano-banana-pro',
-      baseUrl: 'Default: https://mingyu.it.com',
+      models: 'gpt-image-2,nanobanana,nanobanana2,nanobananapro',
+      baseUrl: 'Default: https://aiapipro.vip',
     },
   },
 }

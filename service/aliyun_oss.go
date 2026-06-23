@@ -123,18 +123,34 @@ func StrictSaveImageURLToAliyunOSS(rawURL string, upstreamBaseURL string) (strin
 	return saveImageURLToAliyunOSSWithConfig(cfg, rawURL, upstreamBaseURL)
 }
 
+func StrictSaveFileURLToAliyunOSS(rawURL string, upstreamBaseURL string) (string, error) {
+	cfg := GetAliyunOssConfig()
+	if !cfg.IsEnabledAndValid() {
+		return "", fmt.Errorf("aliyun oss is not enabled or configured")
+	}
+	return saveFileURLToAliyunOSSWithConfig(cfg, rawURL, upstreamBaseURL)
+}
+
 func saveImageURLToAliyunOSSWithConfig(cfg AliyunOssConfig, rawURL string, upstreamBaseURL string) (string, error) {
+	return saveURLToAliyunOSSWithConfig(cfg, rawURL, upstreamBaseURL, true)
+}
+
+func saveFileURLToAliyunOSSWithConfig(cfg AliyunOssConfig, rawURL string, upstreamBaseURL string) (string, error) {
+	return saveURLToAliyunOSSWithConfig(cfg, rawURL, upstreamBaseURL, false)
+}
+
+func saveURLToAliyunOSSWithConfig(cfg AliyunOssConfig, rawURL string, upstreamBaseURL string, requireImage bool) (string, error) {
 	resolvedURL, err := resolveImageURL(rawURL, upstreamBaseURL)
 	if err != nil {
 		return "", err
 	}
 
-	data, contentType, err := downloadImageBytes(resolvedURL)
+	data, contentType, err := downloadURLBytes(resolvedURL, requireImage)
 	if err != nil {
 		return "", err
 	}
 
-	objectKey := buildAliyunOssObjectKey(cfg.PathPrefix, contentType)
+	objectKey := buildAliyunOssObjectKeyWithFallback(cfg.PathPrefix, contentType, extensionFromURL(resolvedURL))
 	if err := uploadBytesToAliyunOSS(cfg, objectKey, data, contentType); err != nil {
 		return "", err
 	}
@@ -210,6 +226,10 @@ func resolveImageURL(rawURL string, upstreamBaseURL string) (string, error) {
 }
 
 func downloadImageBytes(originURL string) ([]byte, string, error) {
+	return downloadURLBytes(originURL, true)
+}
+
+func downloadURLBytes(originURL string, requireImage bool) ([]byte, string, error) {
 	resp, err := DoDownloadRequest(originURL, "aliyun_oss_image_replace")
 	if err != nil {
 		return nil, "", err
@@ -237,7 +257,7 @@ func downloadImageBytes(originURL string) ([]byte, string, error) {
 	if contentType == "" || contentType == "application/octet-stream" {
 		contentType = http.DetectContentType(data)
 	}
-	if !strings.HasPrefix(contentType, "image/") {
+	if requireImage && !strings.HasPrefix(contentType, "image/") {
 		return nil, "", fmt.Errorf("downloaded file is not image, content-type=%s", contentType)
 	}
 
@@ -256,7 +276,14 @@ func canonicalContentType(contentType string) string {
 }
 
 func buildAliyunOssObjectKey(prefix, contentType string) string {
+	return buildAliyunOssObjectKeyWithFallback(prefix, contentType, "")
+}
+
+func buildAliyunOssObjectKeyWithFallback(prefix, contentType string, fallbackExt string) string {
 	fileExt := imageFileExt(contentType)
+	if fallbackExt != "" && (fileExt == ".png" || fileExt == ".bin") {
+		fileExt = fallbackExt
+	}
 	if prefix == "" {
 		prefix = "openai-images"
 	}
@@ -288,9 +315,38 @@ func imageFileExt(contentType string) string {
 		return ".bmp"
 	case "image/svg+xml":
 		return ".svg"
+	case "image/vnd.adobe.photoshop":
+		return ".psd"
+	case "application/pdf":
+		return ".pdf"
+	case "application/zip":
+		return ".zip"
+	case "application/octet-stream":
+		return ".bin"
 	default:
+		if !strings.HasPrefix(contentType, "image/") {
+			return ".bin"
+		}
 		return ".png"
 	}
+}
+
+func extensionFromURL(rawURL string) string {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	ext := strings.ToLower(path.Ext(parsedURL.Path))
+	if len(ext) < 2 || len(ext) > 10 {
+		return ""
+	}
+	for _, r := range ext[1:] {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		return ""
+	}
+	return ext
 }
 
 func uploadBytesToAliyunOSS(cfg AliyunOssConfig, objectKey string, data []byte, contentType string) error {

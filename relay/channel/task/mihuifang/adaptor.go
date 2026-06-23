@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel"
 	taskcommon "github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
@@ -29,22 +32,19 @@ type TaskAdaptor struct {
 	baseURL     string
 }
 
-type asyncGenerationResponse struct {
-	ID        string                 `json:"id,omitempty"`
-	TaskID    string                 `json:"task_id,omitempty"`
-	Object    string                 `json:"object,omitempty"`
-	Type      string                 `json:"type,omitempty"`
-	Mode      string                 `json:"mode,omitempty"`
-	Status    string                 `json:"status,omitempty"`
-	Progress  int                    `json:"progress,omitempty"`
-	Model     string                 `json:"model,omitempty"`
-	CreatedAt int64                  `json:"created_at,omitempty"`
-	Result    map[string]interface{} `json:"result,omitempty"`
-	URL       string                 `json:"url,omitempty"`
-	Detail    struct {
-		Status string `json:"status,omitempty"`
-	} `json:"detail,omitempty"`
-	Error *struct {
+type aiAPIProTaskResponse struct {
+	TaskOrderID   int64                  `json:"taskOrderId,omitempty"`
+	RequestID     string                 `json:"requestId,omitempty"`
+	ModelCode     string                 `json:"modelCode,omitempty"`
+	ModelName     string                 `json:"modelName,omitempty"`
+	Status        string                 `json:"status,omitempty"`
+	BillingStatus string                 `json:"billingStatus,omitempty"`
+	Progress      int                    `json:"progress,omitempty"`
+	ResultCount   int                    `json:"resultCount,omitempty"`
+	CreateTime    string                 `json:"createTime,omitempty"`
+	Result        map[string]interface{} `json:"result,omitempty"`
+	URL           string                 `json:"url,omitempty"`
+	Error         *struct {
 		Message string `json:"message,omitempty"`
 		Code    string `json:"code,omitempty"`
 	} `json:"error,omitempty"`
@@ -67,11 +67,11 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	if strings.TrimSpace(req.Model) == "" {
 		return service.TaskErrorWrapperLocal(fmt.Errorf("model field is required"), "missing_model", http.StatusBadRequest)
 	}
-	if hasImageInput(req) && req.Mode == "" {
+	if info.RelayMode == relayconstant.RelayModeImagesEdits || strings.Contains(c.Request.URL.Path, "/images/edits") {
 		info.Action = constant.TaskActionGenerate
-	} else {
-		info.Action = constant.TaskActionTextGenerate
+		return nil
 	}
+	info.Action = constant.TaskActionTextGenerate
 	return nil
 }
 
@@ -92,23 +92,43 @@ func (a *TaskAdaptor) ValidateBilling(c *gin.Context, info *relaycommon.RelayInf
 	if err != nil {
 		return err
 	}
-	if _, ok := lookupConfiguredModelPrice(info.OriginModelName); !ok {
+	if _, ok := lookupConfiguredModelPrice(modelPriceCandidates(info.OriginModelName, info.UpstreamModelName)...); !ok {
 		return fmt.Errorf("model price is required for %s", info.OriginModelName)
 	}
 	tierKey := imageTierPriceKey(req, info.UpstreamModelName)
-	if _, ok := lookupConfiguredModelPrice(info.OriginModelName + tierKey); !ok {
+	if _, ok := lookupConfiguredModelPrice(modelTierPriceCandidates(tierKey, info.OriginModelName, info.UpstreamModelName)...); !ok {
 		return fmt.Errorf("model price is required for %s", info.OriginModelName+tierKey)
 	}
 	return nil
 }
 
+func (a *TaskAdaptor) ResolveBillingModelName(info *relaycommon.RelayInfo) string {
+	if info == nil {
+		return ""
+	}
+	for _, name := range modelPriceCandidates(info.OriginModelName, info.UpstreamModelName) {
+		if _, ok := lookupConfiguredModelPrice(name); ok {
+			return name
+		}
+	}
+	return info.OriginModelName
+}
+
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
-	return strings.TrimRight(a.baseURL, "/") + "/v1/async/generations", nil
+	path := "/v1/images/generations"
+	if info.RelayMode == relayconstant.RelayModeImagesEdits || strings.Contains(info.RequestURLPath, "/images/edits") {
+		path = "/v1/images/edits"
+	}
+	return strings.TrimRight(a.baseURL, "/") + path, nil
 }
 
 func (a *TaskAdaptor) BuildRequestHeader(c *gin.Context, req *http.Request, info *relaycommon.RelayInfo) error {
 	req.Header.Set("Authorization", "Bearer "+a.apiKey)
-	req.Header.Set("Content-Type", "application/json")
+	if contentType := c.Request.Header.Get("Content-Type"); strings.HasPrefix(contentType, "multipart/form-data") {
+		req.Header.Set("Content-Type", contentType)
+	} else {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Accept", "application/json")
 	return nil
 }
@@ -118,25 +138,32 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	if err != nil {
 		return nil, err
 	}
-	if !isSupportedModel(info.UpstreamModelName) {
+	upstreamModel := normalizeMihuifangModel(info.UpstreamModelName)
+	if !isSupportedModel(upstreamModel) {
 		return nil, fmt.Errorf("unsupported model: %s", info.UpstreamModelName)
 	}
+	if isMultipartEditRequest(c, info) {
+		return buildMultipartRequestBody(c, upstreamModel)
+	}
 	body := map[string]interface{}{
-		"model":  info.UpstreamModelName,
-		"mode":   resolveMode(req),
+		"model":  upstreamModel,
 		"prompt": req.Prompt,
 	}
-	setString(body, "image", req.Image)
-	if len(req.Images) > 0 {
-		body["images"] = req.Images
+	if images := requestImages(req); len(images) > 0 {
+		body["image"] = images
 	}
 	if len(req.ReferenceImages) > 0 {
-		body["referenceImages"] = req.ReferenceImages
+		body["reference_images"] = req.ReferenceImages
 	}
 	setString(body, "size", req.Size)
 	setString(body, "quality", req.Quality)
-	setString(body, "aspect_ratio", req.AspectRatio)
-	setString(body, "resolution", req.Resolution)
+	setString(body, "response_format", req.ResponseFormat)
+	if len(req.Mask) > 0 {
+		body["mask"] = req.Mask
+	}
+	if req.OutputPSD != nil {
+		body["output_psd"] = *req.OutputPSD
+	}
 	if req.N > 0 {
 		body["n"] = req.N
 	}
@@ -158,32 +185,32 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	}
 	_ = resp.Body.Close()
 
-	var upstream asyncGenerationResponse
+	var upstream aiAPIProTaskResponse
 	if err := common.Unmarshal(responseBody, &upstream); err != nil {
 		return "", nil, service.TaskErrorWrapper(errors.Wrapf(err, "body: %s", responseBody), "unmarshal_response_body_failed", http.StatusInternalServerError)
 	}
 
-	upstreamID := firstNonEmpty(upstream.ID, upstream.TaskID)
+	upstreamID := upstream.RequestID
 	if upstreamID == "" {
-		return "", nil, service.TaskErrorWrapper(fmt.Errorf("task_id is empty"), "invalid_response", http.StatusInternalServerError)
+		return "", nil, service.TaskErrorWrapper(fmt.Errorf("requestId is empty"), "invalid_response", http.StatusInternalServerError)
 	}
 
-	upstream.ID = info.PublicTaskID
-	upstream.TaskID = info.PublicTaskID
-	upstream.Object = "async.generation"
-	upstream.Type = "image"
-	upstream.Model = info.OriginModelName
-	if upstream.Mode == "" {
-		req, _ := relaycommon.GetTaskRequest(c)
-		upstream.Mode = resolveMode(req)
-	}
+	upstream.RequestID = info.PublicTaskID
+	sanitizePublicResponseModel(&upstream, info.OriginModelName)
 	if upstream.Status == "" {
-		upstream.Status = "pending"
+		upstream.Status = "submitted"
 	}
-	upstream.Detail.Status = upstream.Status
+	if isSuccessStatus(upstream.Status) {
+		saved, err := saveResultFilesToOSS(upstream.Result, upstream.URL)
+		if err != nil {
+			return "", nil, service.TaskErrorWrapper(err, "save_result_file_failed", http.StatusInternalServerError)
+		}
+		upstream = applySavedImages(upstream, saved)
+	}
 
 	c.JSON(http.StatusOK, upstream)
-	return upstreamID, responseBody, nil
+	taskData := normalizeResponseData(upstream)
+	return upstreamID, taskData, nil
 }
 
 func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy string) (*http.Response, error) {
@@ -191,7 +218,7 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 	if !ok || strings.TrimSpace(taskID) == "" {
 		return nil, fmt.Errorf("invalid task_id")
 	}
-	uri := fmt.Sprintf("%s/v1/async/generations/%s", strings.TrimRight(baseUrl, "/"), taskID)
+	uri := fmt.Sprintf("%s/v1/tasks/%s", strings.TrimRight(baseUrl, "/"), taskID)
 	req, err := http.NewRequest(http.MethodGet, uri, nil)
 	if err != nil {
 		return nil, err
@@ -207,13 +234,13 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 }
 
 func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
-	var resp asyncGenerationResponse
+	var resp aiAPIProTaskResponse
 	if err := common.Unmarshal(respBody, &resp); err != nil {
 		return nil, errors.Wrap(err, "unmarshal task result failed")
 	}
 
-	ti := &relaycommon.TaskInfo{TaskID: firstNonEmpty(resp.ID, resp.TaskID)}
-	status := strings.ToLower(firstNonEmpty(resp.Status, resp.Detail.Status))
+	ti := &relaycommon.TaskInfo{TaskID: resp.RequestID}
+	status := strings.ToLower(resp.Status)
 	switch status {
 	case "pending", "queued", "submitted":
 		ti.Status = model.TaskStatusQueued
@@ -222,18 +249,18 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	case "completed", "succeeded", "success":
 		ti.Status = model.TaskStatusSuccess
 		ti.Progress = "100%"
-		saved, err := saveResultImagesToOSS(resp.Result, resp.URL)
+		saved, err := saveResultFilesToOSS(resp.Result, resp.URL)
 		if err != nil {
 			ti.Status = model.TaskStatusFailure
-			ti.Reason = fmt.Sprintf("save result image to aliyun oss failed: %s", err.Error())
+			ti.Reason = fmt.Sprintf("save result file to aliyun oss failed: %s", err.Error())
 			ti.Progress = "100%"
 			ti.Data = failureResponseData(resp, ti.Reason)
 			return ti, nil
 		}
 		resp = applySavedImages(resp, saved)
-		ti.Url = firstNonEmpty(resp.URL, firstResultImage(resp.Result))
+		ti.Url = firstNonEmpty(resp.URL, firstResultURL(resp.Result))
 		ti.Data = normalizeResponseData(resp)
-	case "failed", "failure", "cancelled", "canceled":
+	case "failed", "failure", "timeout", "cancelled", "canceled":
 		ti.Status = model.TaskStatusFailure
 		ti.Progress = "100%"
 		if resp.Error != nil && resp.Error.Message != "" {
@@ -261,6 +288,15 @@ func (a *TaskAdaptor) GetChannelName() string {
 	return ChannelName
 }
 
+func isSuccessStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "succeeded", "success":
+		return true
+	default:
+		return false
+	}
+}
+
 func isSupportedModel(modelName string) bool {
 	for _, m := range ModelList {
 		if modelName == m {
@@ -270,18 +306,133 @@ func isSupportedModel(modelName string) bool {
 	return false
 }
 
-func hasImageInput(req relaycommon.TaskSubmitReq) bool {
-	return strings.TrimSpace(req.Image) != "" || len(req.Images) > 0 || len(req.ReferenceImages) > 0
+func normalizeMihuifangModel(modelName string) string {
+	switch strings.TrimSpace(modelName) {
+	case "nano-banana":
+		return "nanobanana"
+	case "nano-banana2":
+		return "nanobanana2"
+	case "nano-banana-pro":
+		return "nanobananapro"
+	default:
+		return strings.TrimSpace(modelName)
+	}
 }
 
-func resolveMode(req relaycommon.TaskSubmitReq) string {
-	if strings.TrimSpace(req.Mode) != "" {
-		return req.Mode
+func isMultipartEditRequest(c *gin.Context, info *relaycommon.RelayInfo) bool {
+	if c == nil || c.Request == nil {
+		return false
 	}
-	if hasImageInput(req) {
-		return "image_to_image"
+	if info.RelayMode != relayconstant.RelayModeImagesEdits && !strings.Contains(c.Request.URL.Path, "/images/edits") {
+		return false
 	}
-	return "text_to_image"
+	return strings.HasPrefix(c.Request.Header.Get("Content-Type"), "multipart/form-data")
+}
+
+func requestImages(req relaycommon.TaskSubmitReq) []string {
+	images := make([]string, 0, len(req.Images)+1)
+	if strings.TrimSpace(req.Image) != "" {
+		images = append(images, strings.TrimSpace(req.Image))
+	}
+	for _, image := range req.Images {
+		image = strings.TrimSpace(image)
+		if image != "" {
+			images = append(images, image)
+		}
+	}
+	return uniqueStrings(images)
+}
+
+func buildMultipartRequestBody(c *gin.Context, upstreamModel string) (io.Reader, error) {
+	form, err := common.ParseMultipartFormReusable(c)
+	if err != nil {
+		return nil, fmt.Errorf("parse multipart form failed: %w", err)
+	}
+
+	var requestBody bytes.Buffer
+	writer := multipart.NewWriter(&requestBody)
+	if err := writer.WriteField("model", upstreamModel); err != nil {
+		return nil, err
+	}
+
+	writeValues := func(field string, values []string) error {
+		for _, value := range values {
+			if err := writer.WriteField(field, value); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	for key, values := range form.Value {
+		if key == "model" {
+			continue
+		}
+		switch key {
+		case "images", "image[]":
+			if err := writeValues("image", values); err != nil {
+				return nil, err
+			}
+		case "referenceImages":
+			if err := writeValues("reference_images", values); err != nil {
+				return nil, err
+			}
+		default:
+			if err := writeValues(key, values); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	for fieldName, files := range form.File {
+		upstreamField := normalizeMultipartFileField(fieldName)
+		for _, fileHeader := range files {
+			if err := copyMultipartFile(writer, upstreamField, fileHeader); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+	return &requestBody, nil
+}
+
+func normalizeMultipartFileField(fieldName string) string {
+	switch {
+	case fieldName == "images" || fieldName == "image[]" || strings.HasPrefix(fieldName, "image["):
+		return "image"
+	case fieldName == "referenceImages":
+		return "reference_images"
+	default:
+		return fieldName
+	}
+}
+
+func copyMultipartFile(writer *multipart.Writer, fieldName string, fileHeader *multipart.FileHeader) error {
+	file, err := fileHeader.Open()
+	if err != nil {
+		return fmt.Errorf("open multipart file %q failed: %w", fileHeader.Filename, err)
+	}
+	defer file.Close()
+
+	contentType := fileHeader.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, fieldName, fileHeader.Filename))
+	header.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return fmt.Errorf("create multipart part %q failed: %w", fieldName, err)
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return fmt.Errorf("copy multipart file %q failed: %w", fileHeader.Filename, err)
+	}
+	return nil
 }
 
 func setString(m map[string]interface{}, key, value string) {
@@ -290,14 +441,14 @@ func setString(m map[string]interface{}, key, value string) {
 	}
 }
 
-func saveResultImagesToOSS(result map[string]interface{}, topURL string) ([]string, error) {
-	raw := collectResultImageURLs(result, topURL)
+func saveResultFilesToOSS(result map[string]interface{}, topURL string) ([]string, error) {
+	raw := collectResultURLs(result, topURL)
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("completed response contains no image url")
+		return nil, fmt.Errorf("completed response contains no result url")
 	}
 	saved := make([]string, 0, len(raw))
 	for _, u := range raw {
-		ossURL, err := service.StrictSaveImageURLToAliyunOSS(u, "")
+		ossURL, err := service.StrictSaveFileURLToAliyunOSS(u, "")
 		if err != nil {
 			return nil, err
 		}
@@ -306,7 +457,7 @@ func saveResultImagesToOSS(result map[string]interface{}, topURL string) ([]stri
 	return saved, nil
 }
 
-func collectResultImageURLs(result map[string]interface{}, topURL string) []string {
+func collectResultURLs(result map[string]interface{}, topURL string) []string {
 	urls := make([]string, 0)
 	add := func(v string) {
 		v = strings.TrimSpace(v)
@@ -333,12 +484,23 @@ func collectResultImageURLs(result map[string]interface{}, topURL string) []stri
 		if v, ok := result["url"].(string); ok {
 			add(v)
 		}
+		if items, ok := result["items"].([]interface{}); ok {
+			for _, item := range items {
+				itemMap, ok := item.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if v, ok := itemMap["url"].(string); ok {
+					add(v)
+				}
+			}
+		}
 	}
 	add(topURL)
 	return uniqueStrings(urls)
 }
 
-func applySavedImages(resp asyncGenerationResponse, saved []string) asyncGenerationResponse {
+func applySavedImages(resp aiAPIProTaskResponse, saved []string) aiAPIProTaskResponse {
 	if resp.Result == nil {
 		resp.Result = map[string]interface{}{}
 	}
@@ -352,15 +514,32 @@ func applySavedImages(resp asyncGenerationResponse, saved []string) asyncGenerat
 	} else {
 		delete(resp.Result, "image_urls")
 	}
-	resp.Object = "async.generation"
-	resp.Type = "image"
-	resp.Status = "completed"
+	if items, ok := resp.Result["items"].([]interface{}); ok {
+		savedIndex := 0
+		for i, item := range items {
+			itemMap, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if _, ok := itemMap["url"].(string); !ok {
+				continue
+			}
+			if savedIndex >= len(saved) {
+				break
+			}
+			itemMap["url"] = saved[savedIndex]
+			items[i] = itemMap
+			savedIndex++
+		}
+		resp.Result["items"] = items
+	}
+	resp.Status = "succeeded"
 	resp.Progress = 100
-	resp.Detail.Status = "completed"
+	resp.ResultCount = len(saved)
 	return resp
 }
 
-func firstResultImage(result map[string]interface{}) string {
+func firstResultURL(result map[string]interface{}) string {
 	if result == nil {
 		return ""
 	}
@@ -375,27 +554,32 @@ func firstResultImage(result map[string]interface{}) string {
 			return s
 		}
 	}
+	if items, ok := result["items"].([]interface{}); ok {
+		for _, item := range items {
+			itemMap, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if s, ok := itemMap["url"].(string); ok {
+				return s
+			}
+		}
+	}
 	return ""
 }
 
-func normalizeResponseData(resp asyncGenerationResponse) []byte {
-	resp.Object = "async.generation"
-	resp.Type = "image"
-	if resp.Detail.Status == "" {
-		resp.Detail.Status = resp.Status
-	}
+func normalizeResponseData(resp aiAPIProTaskResponse) []byte {
+	clearUpstreamModelName(&resp)
 	data, _ := common.Marshal(resp)
 	return data
 }
 
-func failureResponseData(resp asyncGenerationResponse, reason string) []byte {
+func failureResponseData(resp aiAPIProTaskResponse, reason string) []byte {
+	clearUpstreamModelName(&resp)
 	resp.Result = nil
 	resp.URL = ""
-	resp.Object = "async.generation"
-	resp.Type = "image"
 	resp.Status = "failed"
 	resp.Progress = 100
-	resp.Detail.Status = "failed"
 	resp.Error = &struct {
 		Message string `json:"message,omitempty"`
 		Code    string `json:"code,omitempty"`
@@ -443,12 +627,12 @@ func imageQualityRatio(modelName, quality string) float64 {
 }
 
 func imageTierPriceRatio(originModel, upstreamModel string, req relaycommon.TaskSubmitReq) float64 {
-	basePrice, ok := lookupConfiguredModelPrice(originModel)
+	basePrice, ok := lookupConfiguredModelPrice(modelPriceCandidates(originModel, upstreamModel)...)
 	if !ok || basePrice <= 0 {
 		return 1
 	}
 	tierKey := imageTierPriceKey(req, upstreamModel)
-	tierPrice, ok := lookupConfiguredModelPrice(originModel + tierKey)
+	tierPrice, ok := lookupConfiguredModelPrice(modelTierPriceCandidates(tierKey, originModel, upstreamModel)...)
 	if !ok || tierPrice <= 0 {
 		return 1
 	}
@@ -456,15 +640,46 @@ func imageTierPriceRatio(originModel, upstreamModel string, req relaycommon.Task
 }
 
 func imageTierPriceKey(req relaycommon.TaskSubmitReq, upstreamModel string) string {
-	parts := []string{imageSizeTier(req.Size, req.Resolution)}
+	upstreamModel = normalizeMihuifangModel(upstreamModel)
 	if upstreamModel == "gpt-image-2" {
 		quality := strings.ToLower(strings.TrimSpace(req.Quality))
 		if quality == "" {
-			quality = "medium"
+			quality = "low"
 		}
-		parts = append(parts, quality)
+		parts := []string{quality}
+		if req.OutputPSD != nil && *req.OutputPSD {
+			parts = append(parts, "psd")
+		}
+		return "@" + strings.Join(parts, "@")
 	}
-	return "@" + strings.Join(parts, "@")
+	return "@" + imageSizeTier(req.Size, req.Resolution)
+}
+
+func modelPriceCandidates(originModel, upstreamModel string) []string {
+	names := make([]string, 0, 4)
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		names = append(names, name)
+		normalized := normalizeMihuifangModel(name)
+		if normalized != name {
+			names = append(names, normalized)
+		}
+	}
+	add(originModel)
+	add(upstreamModel)
+	return uniqueStrings(names)
+}
+
+func modelTierPriceCandidates(tierKey, originModel, upstreamModel string) []string {
+	baseNames := modelPriceCandidates(originModel, upstreamModel)
+	names := make([]string, 0, len(baseNames))
+	for _, name := range baseNames {
+		names = append(names, name+tierKey)
+	}
+	return names
 }
 
 func lookupConfiguredModelPrice(names ...string) (float64, bool) {
@@ -544,17 +759,10 @@ func parsePixels(s string) (int, int, bool) {
 
 func ConvertStoredTask(task *model.Task) []byte {
 	if len(task.Data) > 0 {
-		var resp asyncGenerationResponse
+		var resp aiAPIProTaskResponse
 		if err := common.Unmarshal(task.Data, &resp); err == nil {
-			resp.ID = task.TaskID
-			resp.TaskID = task.TaskID
-			resp.Model = publicTaskModel(task)
-			if resp.Object == "" {
-				resp.Object = "async.generation"
-			}
-			if resp.Type == "" {
-				resp.Type = "image"
-			}
+			resp.RequestID = task.TaskID
+			sanitizePublicResponseModel(&resp, publicTaskModel(task))
 			applyTaskStatus(&resp, task)
 			return normalizeResponseData(resp)
 		}
@@ -567,16 +775,22 @@ func IsCompletedTask(task *model.Task) bool {
 }
 
 func responseFromTaskStatus(task *model.Task) []byte {
-	resp := asyncGenerationResponse{
-		ID:        task.TaskID,
-		TaskID:    task.TaskID,
-		Object:    "async.generation",
-		Type:      "image",
-		Model:     publicTaskModel(task),
-		CreatedAt: task.CreatedAt,
+	resp := aiAPIProTaskResponse{
+		RequestID: task.TaskID,
+		ModelCode: publicTaskModel(task),
 	}
+	clearUpstreamModelName(&resp)
 	applyTaskStatus(&resp, task)
 	return normalizeResponseData(resp)
+}
+
+func sanitizePublicResponseModel(resp *aiAPIProTaskResponse, publicModel string) {
+	resp.ModelCode = publicModel
+	clearUpstreamModelName(resp)
+}
+
+func clearUpstreamModelName(resp *aiAPIProTaskResponse) {
+	resp.ModelName = ""
 }
 
 func publicTaskModel(task *model.Task) string {
@@ -589,10 +803,10 @@ func publicTaskModel(task *model.Task) string {
 	return task.Properties.UpstreamModelName
 }
 
-func applyTaskStatus(resp *asyncGenerationResponse, task *model.Task) {
+func applyTaskStatus(resp *aiAPIProTaskResponse, task *model.Task) {
 	switch task.Status {
 	case model.TaskStatusSuccess:
-		resp.Status = "completed"
+		resp.Status = "succeeded"
 		resp.Progress = 100
 	case model.TaskStatusFailure:
 		resp.Status = "failed"
@@ -614,5 +828,4 @@ func applyTaskStatus(resp *asyncGenerationResponse, task *model.Task) {
 			resp.Progress = 0
 		}
 	}
-	resp.Detail.Status = resp.Status
 }
