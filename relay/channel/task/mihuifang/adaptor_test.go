@@ -97,6 +97,41 @@ func TestBuildRequestBodyAllowsMappedModel(t *testing.T) {
 	}
 }
 
+func TestBuildRequestBodyAllowsProVariantModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:  "gemini-3-pro-image",
+		Prompt: "draw a cat",
+		Size:   "16x9-4K",
+	})
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "nanobananapro-5"},
+	}
+
+	body, err := (&TaskAdaptor{}).BuildRequestBody(c, info)
+	if err != nil {
+		t.Fatalf("BuildRequestBody error = %v", err)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read body error = %v", err)
+	}
+	var payload map[string]interface{}
+	if err := common.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal body error = %v", err)
+	}
+	if got := payload["model"]; got != "nanobananapro-5" {
+		t.Fatalf("model = %v, want nanobananapro-5; body=%s", got, data)
+	}
+	if got := payload["size"]; got != "5504x3072" {
+		t.Fatalf("size = %v, want 5504x3072; body=%s", got, data)
+	}
+	if got := payload["quality"]; got != "hd" {
+		t.Fatalf("quality = %v, want hd; body=%s", got, data)
+	}
+}
+
 func TestBuildRequestBodyNormalizesNanoLegacySize(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -491,6 +526,39 @@ func TestEstimateBillingFallsBackToMappedUpstreamPrice(t *testing.T) {
 	ratios := (&TaskAdaptor{}).EstimateBilling(c, info)
 	if ratios["price_tier"] != 3 {
 		t.Fatalf("price_tier ratio = %v, want 3", ratios["price_tier"])
+	}
+}
+
+func TestEstimateBillingFallsBackFromVariantToModelFamilyPrice(t *testing.T) {
+	oldPriceJSON := ratio_setting.ModelPrice2JSONString()
+	defer func() { _ = ratio_setting.UpdateModelPriceByJSONString(oldPriceJSON) }()
+	if err := ratio_setting.UpdateModelPriceByJSONString(`{
+		"nanobananapro": 0.08,
+		"nanobananapro@4k": 0.20
+	}`); err != nil {
+		t.Fatalf("UpdateModelPriceByJSONString error = %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("task_request", relaycommon.TaskSubmitReq{
+		Model: "gemini-3-pro-image",
+		Size:  "16x9-4K",
+	})
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gemini-3-pro-image",
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "nanobananapro-5"},
+	}
+
+	if got := (&TaskAdaptor{}).ResolveBillingModelName(info); got != "nanobananapro" {
+		t.Fatalf("ResolveBillingModelName = %q, want nanobananapro", got)
+	}
+	if err := (&TaskAdaptor{}).ValidateBilling(c, info); err != nil {
+		t.Fatalf("ValidateBilling error = %v", err)
+	}
+	ratios := (&TaskAdaptor{}).EstimateBilling(c, info)
+	if ratios["price_tier"] != 2.5 {
+		t.Fatalf("price_tier ratio = %v, want 2.5", ratios["price_tier"])
 	}
 }
 

@@ -325,6 +325,19 @@ func normalizeMihuifangModel(modelName string) string {
 	}
 }
 
+func mihuifangModelFamily(modelName string) string {
+	switch normalizeMihuifangModel(modelName) {
+	case "nanobanana-5":
+		return "nanobanana"
+	case "nanobanana2-5":
+		return "nanobanana2"
+	case "nanobananapro-5":
+		return "nanobananapro"
+	default:
+		return normalizeMihuifangModel(modelName)
+	}
+}
+
 func isMultipartEditRequest(c *gin.Context, info *relaycommon.RelayInfo) bool {
 	if c == nil || c.Request == nil {
 		return false
@@ -427,13 +440,13 @@ func setImageRequestOptions(body map[string]interface{}, upstreamModel string, r
 }
 
 func normalizedImageRequestOptions(upstreamModel string, req relaycommon.TaskSubmitReq) (string, string, error) {
-	upstreamModel = normalizeMihuifangModel(upstreamModel)
+	modelFamily := mihuifangModelFamily(upstreamModel)
 	size, tier, err := normalizeUpstreamImageSize(upstreamModel, req.Size, req.AspectRatio, req.Resolution)
 	if err != nil {
 		return "", "", err
 	}
 	quality := strings.ToLower(strings.TrimSpace(req.Quality))
-	if upstreamModel == "gpt-image-2" {
+	if modelFamily == "gpt-image-2" {
 		if quality != "" && quality != "low" && quality != "medium" && quality != "high" {
 			return "", "", fmt.Errorf("unsupported quality for gpt-image-2: %s", req.Quality)
 		}
@@ -443,13 +456,13 @@ func normalizedImageRequestOptions(upstreamModel string, req relaycommon.TaskSub
 		return size, nanoQualityForTier(tier), nil
 	}
 	if quality != "" && quality != "standard" && quality != "hd" {
-		return "", "", fmt.Errorf("unsupported quality for %s: %s", upstreamModel, req.Quality)
+		return "", "", fmt.Errorf("unsupported quality for %s: %s", modelFamily, req.Quality)
 	}
 	return "", quality, nil
 }
 
 func normalizeUpstreamImageSize(upstreamModel, size, aspectRatio, resolution string) (string, string, error) {
-	upstreamModel = normalizeMihuifangModel(upstreamModel)
+	modelFamily := mihuifangModelFamily(upstreamModel)
 	rawSize := strings.TrimSpace(size)
 	rawAspect := strings.TrimSpace(aspectRatio)
 	rawResolution := strings.TrimSpace(resolution)
@@ -463,14 +476,14 @@ func normalizeUpstreamImageSize(upstreamModel, size, aspectRatio, resolution str
 		pixelSize := fmt.Sprintf("%dx%d", w, h)
 		if spec, ok := aiAPIProSizeByPixels[pixelSize]; ok {
 			if !isImageSizeSupportedByModel(upstreamModel, spec) {
-				return "", "", fmt.Errorf("%s does not support ratio %s", upstreamModel, spec.Aspect)
+				return "", "", fmt.Errorf("%s does not support ratio %s", modelFamily, spec.Aspect)
 			}
 			return pixelSize, spec.Tier, nil
 		}
-		if upstreamModel == "gpt-image-2" {
+		if modelFamily == "gpt-image-2" {
 			return pixelSize, "", nil
 		}
-		return "", "", fmt.Errorf("unsupported size for %s: %s", upstreamModel, rawSize)
+		return "", "", fmt.Errorf("unsupported size for %s: %s", modelFamily, rawSize)
 	}
 
 	tier := imageTierFromText(firstNonEmpty(rawSize, rawResolution))
@@ -482,25 +495,25 @@ func normalizeUpstreamImageSize(upstreamModel, size, aspectRatio, resolution str
 		tier = "1k"
 	}
 	if aspect == "" {
-		return "", "", fmt.Errorf("unsupported size for %s: %s", upstreamModel, firstNonEmpty(rawSize, rawAspect, rawResolution))
+		return "", "", fmt.Errorf("unsupported size for %s: %s", modelFamily, firstNonEmpty(rawSize, rawAspect, rawResolution))
 	}
 	specsByTier, ok := aiAPIProSizeByAspectTier[aspect]
 	if !ok {
-		return "", "", fmt.Errorf("unsupported ratio for %s: %s", upstreamModel, aspect)
+		return "", "", fmt.Errorf("unsupported ratio for %s: %s", modelFamily, aspect)
 	}
 	spec, ok := specsByTier[tier]
 	if !ok {
-		return "", "", fmt.Errorf("unsupported size tier for %s: %s", upstreamModel, tier)
+		return "", "", fmt.Errorf("unsupported size tier for %s: %s", modelFamily, tier)
 	}
 	if !isImageSizeSupportedByModel(upstreamModel, spec) {
-		return "", "", fmt.Errorf("%s does not support ratio %s", upstreamModel, spec.Aspect)
+		return "", "", fmt.Errorf("%s does not support ratio %s", modelFamily, spec.Aspect)
 	}
 	return spec.Size, spec.Tier, nil
 }
 
 func isImageSizeSupportedByModel(upstreamModel string, spec aiAPIProSizeSpec) bool {
-	upstreamModel = normalizeMihuifangModel(upstreamModel)
-	if upstreamModel == "gpt-image-2" || upstreamModel == "nanobanana2" {
+	modelFamily := mihuifangModelFamily(upstreamModel)
+	if modelFamily == "gpt-image-2" || modelFamily == "nanobanana2" {
 		return true
 	}
 	return !spec.Extended
@@ -518,11 +531,11 @@ func validateImageInputLimit(upstreamModel string, count int) error {
 	if limit <= 0 || count <= limit {
 		return nil
 	}
-	return fmt.Errorf("%s supports at most %d input images", normalizeMihuifangModel(upstreamModel), limit)
+	return fmt.Errorf("%s supports at most %d input images", mihuifangModelFamily(upstreamModel), limit)
 }
 
 func imageInputLimit(upstreamModel string) int {
-	switch normalizeMihuifangModel(upstreamModel) {
+	switch mihuifangModelFamily(upstreamModel) {
 	case "nanobanana":
 		return 4
 	case "nanobanana2", "nanobananapro", "gpt-image-2":
@@ -897,8 +910,8 @@ func imageTierPriceRatio(originModel, upstreamModel string, req relaycommon.Task
 }
 
 func imageTierPriceKey(req relaycommon.TaskSubmitReq, upstreamModel string) string {
-	upstreamModel = normalizeMihuifangModel(upstreamModel)
-	if upstreamModel == "gpt-image-2" {
+	modelFamily := mihuifangModelFamily(upstreamModel)
+	if modelFamily == "gpt-image-2" {
 		quality := strings.ToLower(strings.TrimSpace(req.Quality))
 		if quality == "" {
 			quality = "low"
@@ -923,6 +936,10 @@ func modelPriceCandidates(originModel, upstreamModel string) []string {
 		normalized := normalizeMihuifangModel(name)
 		if normalized != name {
 			names = append(names, normalized)
+		}
+		family := mihuifangModelFamily(name)
+		if family != name && family != normalized {
+			names = append(names, family)
 		}
 	}
 	add(originModel)
