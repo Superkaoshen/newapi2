@@ -33,6 +33,12 @@ type TaskAdaptor struct {
 	baseURL     string
 }
 
+const (
+	imageTaskProtocolAIAPIPro = "aiapipro"
+	imageTaskProtocolImageOne = "imageone"
+	imageOneImageLimit        = 5
+)
+
 type aiAPIProTaskResponse struct {
 	TaskOrderID   json.RawMessage        `json:"taskOrderId,omitempty"`
 	RequestID     string                 `json:"requestId,omitempty"`
@@ -49,6 +55,28 @@ type aiAPIProTaskResponse struct {
 		Message string `json:"message,omitempty"`
 		Code    string `json:"code,omitempty"`
 	} `json:"error,omitempty"`
+}
+
+type imageOneSubmitResponse struct {
+	TaskID    string `json:"task_id,omitempty"`
+	ID        string `json:"id,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+type imageOneTaskResponse struct {
+	TaskID  string              `json:"task_id,omitempty"`
+	ID      string              `json:"id,omitempty"`
+	Status  string              `json:"status,omitempty"`
+	Images  []imageOneTaskImage `json:"images,omitempty"`
+	Error   string              `json:"error,omitempty"`
+	Message string              `json:"message,omitempty"`
+}
+
+type imageOneTaskImage struct {
+	URL     string `json:"url,omitempty"`
+	B64JSON string `json:"b64_json,omitempty"`
 }
 
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
@@ -116,6 +144,9 @@ func (a *TaskAdaptor) ResolveBillingModelName(info *relaycommon.RelayInfo) strin
 }
 
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if mihuifangImageProtocol(info) == imageTaskProtocolImageOne {
+		return strings.TrimRight(a.baseURL, "/") + "/v1/images/edits", nil
+	}
 	path := "/v1/images/generations"
 	if info.RelayMode == relayconstant.RelayModeImagesEdits || strings.Contains(info.RequestURLPath, "/images/edits") {
 		path = "/v1/images/edits"
@@ -140,6 +171,9 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		return nil, err
 	}
 	upstreamModel := normalizeMihuifangModel(info.UpstreamModelName)
+	if mihuifangImageProtocol(info) == imageTaskProtocolImageOne {
+		return buildImageOneRequestBody(c, upstreamModel, req)
+	}
 	if !isSupportedModel(upstreamModel) {
 		return nil, fmt.Errorf("unsupported model: %s", info.UpstreamModelName)
 	}
@@ -191,6 +225,10 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	}
 	_ = resp.Body.Close()
 
+	if mihuifangImageProtocol(info) == imageTaskProtocolImageOne {
+		return a.doImageOneResponse(c, responseBody, info)
+	}
+
 	var upstream aiAPIProTaskResponse
 	if err := common.Unmarshal(responseBody, &upstream); err != nil {
 		return "", nil, service.TaskErrorWrapper(errors.Wrapf(err, "body: %s", responseBody), "unmarshal_response_body_failed", http.StatusInternalServerError)
@@ -219,12 +257,40 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	return upstreamID, taskData, nil
 }
 
+func (a *TaskAdaptor) doImageOneResponse(c *gin.Context, responseBody []byte, info *relaycommon.RelayInfo) (string, []byte, *dto.TaskError) {
+	var upstream imageOneSubmitResponse
+	if err := common.Unmarshal(responseBody, &upstream); err != nil {
+		return "", nil, service.TaskErrorWrapper(errors.Wrapf(err, "body: %s", responseBody), "unmarshal_response_body_failed", http.StatusInternalServerError)
+	}
+	upstreamID := firstNonEmpty(upstream.TaskID, upstream.ID, upstream.RequestID)
+	if upstreamID == "" {
+		return "", nil, service.TaskErrorWrapper(fmt.Errorf("task_id is empty"), "invalid_response", http.StatusInternalServerError)
+	}
+	if upstream.Error != "" {
+		return "", nil, service.TaskErrorWrapper(fmt.Errorf("%s", upstream.Error), "upstream_task_failed", http.StatusBadGateway)
+	}
+
+	publicResp := aiAPIProTaskResponse{
+		RequestID:     info.PublicTaskID,
+		ModelCode:     info.OriginModelName,
+		Status:        normalizeImageOneSubmitStatus(upstream.Status),
+		BillingStatus: "pending",
+		Progress:      20,
+	}
+	c.JSON(http.StatusOK, publicResp)
+	return upstreamID, normalizeResponseData(publicResp), nil
+}
+
 func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy string) (*http.Response, error) {
 	taskID, ok := body["task_id"].(string)
 	if !ok || strings.TrimSpace(taskID) == "" {
 		return nil, fmt.Errorf("invalid task_id")
 	}
-	uri := fmt.Sprintf("%s/v1/tasks/%s", strings.TrimRight(baseUrl, "/"), taskID)
+	path := "/v1/tasks/%s"
+	if taskBodyImageProtocol(body) == imageTaskProtocolImageOne {
+		path = "/v1/status/%s"
+	}
+	uri := fmt.Sprintf(strings.TrimRight(baseUrl, "/")+path, taskID)
 	req, err := http.NewRequest(http.MethodGet, uri, nil)
 	if err != nil {
 		return nil, err
@@ -240,6 +306,10 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 }
 
 func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
+	if isImageOneTaskResponse(respBody) {
+		return parseImageOneTaskResult(respBody)
+	}
+
 	var resp aiAPIProTaskResponse
 	if err := common.Unmarshal(respBody, &resp); err != nil {
 		return nil, errors.Wrap(err, "unmarshal task result failed")
@@ -284,6 +354,170 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 		ti.Data = normalizeResponseData(resp)
 	}
 	return ti, nil
+}
+
+func normalizeImageOneSubmitStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "succeeded", "success":
+		return "succeeded"
+	case "failed", "failure", "timeout", "cancelled", "canceled":
+		return "failed"
+	default:
+		return "submitted"
+	}
+}
+
+func isImageOneTaskResponse(respBody []byte) bool {
+	var probe struct {
+		Images json.RawMessage `json:"images,omitempty"`
+		Error  string          `json:"error,omitempty"`
+	}
+	if err := common.Unmarshal(respBody, &probe); err != nil {
+		return false
+	}
+	if len(probe.Images) > 0 || probe.Error != "" {
+		return true
+	}
+	return false
+}
+
+func parseImageOneTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
+	var resp imageOneTaskResponse
+	if err := common.Unmarshal(respBody, &resp); err != nil {
+		return nil, errors.Wrap(err, "unmarshal imageone task result failed")
+	}
+
+	ti := &relaycommon.TaskInfo{TaskID: firstNonEmpty(resp.TaskID, resp.ID)}
+	switch strings.ToLower(strings.TrimSpace(resp.Status)) {
+	case "pending":
+		ti.Status = model.TaskStatusQueued
+	case "processing":
+		ti.Status = model.TaskStatusInProgress
+	case "completed":
+		ti.Status = model.TaskStatusSuccess
+		ti.Progress = "100%"
+		publicResp, err := imageOneResponseToAIAPIPro(resp)
+		if err != nil {
+			ti.Status = model.TaskStatusFailure
+			ti.Reason = err.Error()
+			ti.Data = failureResponseData(aiAPIProTaskResponse{RequestID: ti.TaskID}, ti.Reason)
+			return ti, nil
+		}
+		ti.Url = firstResultURL(publicResp.Result)
+		ti.Data = normalizeResponseData(publicResp)
+	case "failed":
+		ti.Status = model.TaskStatusFailure
+		ti.Progress = "100%"
+		ti.Reason = firstNonEmpty(resp.Error, resp.Message, "task failed")
+	default:
+		ti.Status = model.TaskStatusInProgress
+	}
+	if ti.Data == nil {
+		publicResp := aiAPIProTaskResponse{
+			RequestID: ti.TaskID,
+			Status:    imageOneStatusToPublicStatus(resp.Status),
+			Progress:  imageOneProgress(resp.Status),
+		}
+		if ti.Status == model.TaskStatusFailure {
+			publicResp.Error = &struct {
+				Message string `json:"message,omitempty"`
+				Code    string `json:"code,omitempty"`
+			}{Message: ti.Reason, Code: "upstream_task_failed"}
+		}
+		ti.Data = normalizeResponseData(publicResp)
+	}
+	return ti, nil
+}
+
+func imageOneResponseToAIAPIPro(resp imageOneTaskResponse) (aiAPIProTaskResponse, error) {
+	saved, err := saveImageOneImagesToOSS(resp.Images)
+	if err != nil {
+		return aiAPIProTaskResponse{}, err
+	}
+	if len(saved) == 0 {
+		return aiAPIProTaskResponse{}, fmt.Errorf("completed response contains no result image")
+	}
+	items := make([]interface{}, 0, len(saved))
+	for _, url := range saved {
+		items = append(items, map[string]interface{}{
+			"url":  url,
+			"type": "image",
+		})
+	}
+	result := map[string]interface{}{
+		"items":      items,
+		"image_url":  saved[0],
+		"image_urls": saved,
+		"url":        saved[0],
+	}
+	if len(saved) == 1 {
+		delete(result, "image_urls")
+	}
+	return aiAPIProTaskResponse{
+		RequestID:   firstNonEmpty(resp.TaskID, resp.ID),
+		Status:      "succeeded",
+		Progress:    100,
+		ResultCount: len(saved),
+		Result:      result,
+		URL:         saved[0],
+	}, nil
+}
+
+func saveImageOneImagesToOSS(images []imageOneTaskImage) ([]string, error) {
+	saved := make([]string, 0, len(images))
+	for _, image := range images {
+		if strings.TrimSpace(image.URL) != "" {
+			ossURL, err := service.StrictSaveFileURLToAliyunOSS(image.URL, "")
+			if err != nil {
+				return nil, err
+			}
+			saved = append(saved, ossURL)
+			continue
+		}
+		if strings.TrimSpace(image.B64JSON) != "" {
+			contentType, cleanBase64, err := service.DecodeBase64FileData(image.B64JSON)
+			if err != nil {
+				return nil, err
+			}
+			ossURL, err := service.SaveBase64ImageToAliyunOSS(cleanBase64, contentType)
+			if err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(ossURL) == "" {
+				return nil, fmt.Errorf("aliyun oss is not enabled or configured")
+			}
+			saved = append(saved, ossURL)
+		}
+	}
+	return uniqueNonEmptyStrings(saved), nil
+}
+
+func imageOneStatusToPublicStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending":
+		return "created"
+	case "processing":
+		return "processing"
+	case "completed":
+		return "succeeded"
+	case "failed":
+		return "failed"
+	default:
+		return "processing"
+	}
+}
+
+func imageOneProgress(status string) int {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending":
+		return 0
+	case "processing":
+		return 50
+	case "completed", "failed":
+		return 100
+	default:
+		return 0
+	}
 }
 
 func (a *TaskAdaptor) GetModelList() []string {
@@ -336,6 +570,26 @@ func mihuifangModelFamily(modelName string) string {
 	default:
 		return normalizeMihuifangModel(modelName)
 	}
+}
+
+func mihuifangImageProtocol(info *relaycommon.RelayInfo) string {
+	if info == nil {
+		return imageTaskProtocolAIAPIPro
+	}
+	protocol := strings.ToLower(strings.TrimSpace(info.ChannelOtherSettings.ImageTaskProtocol))
+	if protocol == "" {
+		return imageTaskProtocolAIAPIPro
+	}
+	return protocol
+}
+
+func taskBodyImageProtocol(body map[string]any) string {
+	raw, _ := body["image_protocol"].(string)
+	protocol := strings.ToLower(strings.TrimSpace(raw))
+	if protocol == "" {
+		return imageTaskProtocolAIAPIPro
+	}
+	return protocol
 }
 
 func isMultipartEditRequest(c *gin.Context, info *relaycommon.RelayInfo) bool {
@@ -542,6 +796,221 @@ func imageInputLimit(upstreamModel string) int {
 		return 6
 	default:
 		return 0
+	}
+}
+
+func buildImageOneRequestBody(c *gin.Context, upstreamModel string, req relaycommon.TaskSubmitReq) (io.Reader, error) {
+	if strings.TrimSpace(upstreamModel) == "" {
+		return nil, fmt.Errorf("model field is required")
+	}
+	if strings.TrimSpace(req.Prompt) == "" {
+		return nil, fmt.Errorf("prompt field is required")
+	}
+	if isMultipartEditRequest(c, &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeImagesEdits}) {
+		return buildImageOneMultipartRequestBody(c, upstreamModel)
+	}
+	return buildImageOneJSONRequestBody(upstreamModel, req)
+}
+
+func buildImageOneJSONRequestBody(upstreamModel string, req relaycommon.TaskSubmitReq) (io.Reader, error) {
+	referenceURLs := imageOneReferenceURLsFromTask(req)
+	if len(referenceURLs) == 0 {
+		return nil, fmt.Errorf("image or reference_image_urls is required")
+	}
+	if len(referenceURLs) > imageOneImageLimit {
+		return nil, fmt.Errorf("imageone supports at most %d input images", imageOneImageLimit)
+	}
+
+	body := map[string]interface{}{
+		"model":                upstreamModel,
+		"prompt":               req.Prompt,
+		"reference_image_urls": referenceURLs,
+	}
+	setImageOneOptions(body, req.Size, req.AspectRatio, req.Resolution, req.ResponseFormat)
+	data, err := common.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.NewReader(data), nil
+}
+
+func buildImageOneMultipartRequestBody(c *gin.Context, upstreamModel string) (io.Reader, error) {
+	form, err := common.ParseMultipartFormReusable(c)
+	if err != nil {
+		return nil, fmt.Errorf("parse multipart form failed: %w", err)
+	}
+
+	fields := normalizeImageOneMultipartFields(form.Value)
+	if err := validateImageOneMultipartInputs(fields, form.File); err != nil {
+		return nil, err
+	}
+
+	var requestBody bytes.Buffer
+	writer := multipart.NewWriter(&requestBody)
+	if err := writer.WriteField("model", upstreamModel); err != nil {
+		return nil, err
+	}
+
+	writeValues := func(field string, values []string) error {
+		for _, value := range values {
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+			if err := writer.WriteField(field, value); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for key, values := range fields {
+		if err := writeValues(key, values); err != nil {
+			return nil, err
+		}
+	}
+	for fieldName, files := range form.File {
+		upstreamField := normalizeImageOneMultipartFileField(fieldName)
+		for _, fileHeader := range files {
+			if err := copyMultipartFile(writer, upstreamField, fileHeader); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+	return &requestBody, nil
+}
+
+func normalizeImageOneMultipartFields(values map[string][]string) map[string][]string {
+	fields := make(map[string][]string, len(values))
+	for key, fieldValues := range values {
+		if key == "model" {
+			continue
+		}
+		upstreamField := normalizeImageOneMultipartValueField(key)
+		fields[upstreamField] = append(fields[upstreamField], fieldValues...)
+	}
+
+	size := firstFieldValue(fields, "size")
+	aspect := firstFieldValue(fields, "aspect_ratio")
+	resolution := firstFieldValue(fields, "resolution")
+	responseFormat := firstFieldValue(fields, "response_format")
+	delete(fields, "size")
+	delete(fields, "aspect_ratio")
+	delete(fields, "resolution")
+	delete(fields, "response_format")
+
+	options := map[string]interface{}{}
+	setImageOneOptions(options, size, aspect, resolution, responseFormat)
+	if v, ok := options["aspect_ratio"].(string); ok && v != "" {
+		fields["aspect_ratio"] = []string{v}
+	}
+	if v, ok := options["resolution"].(string); ok && v != "" {
+		fields["resolution"] = []string{v}
+	}
+	if v, ok := options["response_format"].(string); ok && v != "" {
+		fields["response_format"] = []string{v}
+	}
+	return fields
+}
+
+func normalizeImageOneMultipartValueField(fieldName string) string {
+	switch {
+	case fieldName == "image_urls" || fieldName == "image" || fieldName == "images" || fieldName == "referenceImages" || fieldName == "input_images":
+		return "reference_image_urls"
+	default:
+		return fieldName
+	}
+}
+
+func normalizeImageOneMultipartFileField(fieldName string) string {
+	switch {
+	case fieldName == "image[]" || strings.HasPrefix(fieldName, "image["):
+		return "images"
+	default:
+		return fieldName
+	}
+}
+
+func validateImageOneMultipartInputs(fields map[string][]string, files map[string][]*multipart.FileHeader) error {
+	if strings.TrimSpace(firstFieldValue(fields, "prompt")) == "" {
+		return fmt.Errorf("prompt field is required")
+	}
+	fileCount := 0
+	for fieldName, fieldFiles := range files {
+		switch normalizeImageOneMultipartFileField(fieldName) {
+		case "image", "images":
+			fileCount += len(fieldFiles)
+		}
+	}
+	referenceURLCount := countNonEmptyStrings(fields["reference_image_urls"])
+	if fileCount+referenceURLCount == 0 {
+		return fmt.Errorf("image or reference_image_urls is required")
+	}
+	if fileCount+referenceURLCount > imageOneImageLimit {
+		return fmt.Errorf("imageone supports at most %d input images", imageOneImageLimit)
+	}
+	return nil
+}
+
+func imageOneReferenceURLsFromTask(req relaycommon.TaskSubmitReq) []string {
+	referenceURLs := requestImages(req)
+	referenceURLs = append(referenceURLs, req.ReferenceImages...)
+	referenceURLs = append(referenceURLs, req.ReferenceImageURLs...)
+	if req.Metadata != nil {
+		referenceURLs = append(referenceURLs, metadataStringSlice(req.Metadata["reference_image_urls"])...)
+	}
+	return uniqueNonEmptyStrings(referenceURLs)
+}
+
+func metadataStringSlice(v interface{}) []string {
+	switch value := v.(type) {
+	case []string:
+		return value
+	case []interface{}:
+		out := make([]string, 0, len(value))
+		for _, item := range value {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		if strings.TrimSpace(value) == "" {
+			return nil
+		}
+		return []string{value}
+	default:
+		return nil
+	}
+}
+
+func setImageOneOptions(body map[string]interface{}, size, aspectRatio, resolution, responseFormat string) {
+	aspect := firstNonEmpty(imageAspectFromText(aspectRatio), imageAspectFromText(size))
+	if aspect != "" {
+		body["aspect_ratio"] = aspect
+	}
+	tier := strings.ToUpper(imageTierFromText(firstNonEmpty(resolution, size)))
+	if tier != "" {
+		body["resolution"] = tier
+	}
+	format := normalizeImageOneResponseFormat(responseFormat)
+	if format != "" {
+		body["response_format"] = format
+	}
+}
+
+func normalizeImageOneResponseFormat(responseFormat string) string {
+	switch strings.ToLower(strings.TrimSpace(responseFormat)) {
+	case "b64_json", "base64":
+		return "base64"
+	case "url":
+		return "url"
+	case "":
+		return "url"
+	default:
+		return strings.TrimSpace(responseFormat)
 	}
 }
 
@@ -878,6 +1347,17 @@ func uniqueStrings(values []string) []string {
 		out = append(out, v)
 	}
 	return out
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	clean := make([]string, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			clean = append(clean, v)
+		}
+	}
+	return uniqueStrings(clean)
 }
 
 func imageQualityRatio(modelName, quality string) float64 {

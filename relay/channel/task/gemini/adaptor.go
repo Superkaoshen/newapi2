@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
 )
@@ -28,9 +30,10 @@ import (
 
 type TaskAdaptor struct {
 	taskcommon.BaseBilling
-	ChannelType int
-	apiKey      string
-	baseURL     string
+	ChannelType     int
+	apiKey          string
+	baseURL         string
+	initialTaskInfo *relaycommon.TaskInfo
 }
 
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
@@ -48,6 +51,14 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	modelName := info.UpstreamModelName
 	version := model_setting.GetGeminiVersionSetting(modelName)
+	if isGeminiImageTaskModel(modelName) {
+		return fmt.Sprintf(
+			"%s/%s/models/%s:generateContent",
+			a.baseURL,
+			version,
+			modelName,
+		), nil
+	}
 
 	return fmt.Sprintf(
 		"%s/%s/models/%s:predictLongRunning",
@@ -74,6 +85,9 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	req, ok := v.(relaycommon.TaskSubmitReq)
 	if !ok {
 		return nil, fmt.Errorf("unexpected task_request type")
+	}
+	if isGeminiImageTaskModel(info.UpstreamModelName) {
+		return buildGeminiImageRequestBody(req)
 	}
 
 	instance := VeoInstance{Prompt: req.Prompt}
@@ -126,6 +140,9 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 		return "", nil, service.TaskErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
 	_ = resp.Body.Close()
+	if isGeminiImageTaskModel(info.UpstreamModelName) {
+		return a.doImageResponse(c, responseBody, info)
+	}
 
 	var s submitResponse
 	if err := common.Unmarshal(responseBody, &s); err != nil {
@@ -146,6 +163,7 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 
 func (a *TaskAdaptor) GetModelList() []string {
 	return []string{
+		"gemini-3-pro-image-preview",
 		"veo-3.0-generate-001",
 		"veo-3.0-fast-generate-001",
 		"veo-3.1-generate-preview",
@@ -167,6 +185,12 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 	if !ok {
 		return nil
 	}
+	if isGeminiImageTaskModel(info.UpstreamModelName) {
+		return map[string]float64{
+			"price_tier": geminiImageTierPriceRatio(info.OriginModelName, info.UpstreamModelName, req),
+			"n":          geminiImageCountRatio(req.N),
+		}
+	}
 
 	seconds := ResolveVeoDuration(req.Metadata, req.Duration, req.Seconds)
 	resolution := ResolveVeoResolution(req.Metadata, req.Size)
@@ -176,6 +200,450 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 		"seconds":    float64(seconds),
 		"resolution": resRatio,
 	}
+}
+
+func (a *TaskAdaptor) ValidateBilling(c *gin.Context, info *relaycommon.RelayInfo) error {
+	if !isGeminiImageTaskModel(info.UpstreamModelName) {
+		return nil
+	}
+	req, err := relaycommon.GetTaskRequest(c)
+	if err != nil {
+		return err
+	}
+	if _, ok := lookupGeminiConfiguredModelPrice(geminiImageModelPriceCandidates(info.OriginModelName, info.UpstreamModelName)...); !ok {
+		return fmt.Errorf("model price is required for %s", info.OriginModelName)
+	}
+	tierKey := "@" + geminiImageTier(req.Size, req.Resolution)
+	if _, ok := lookupGeminiConfiguredModelPrice(geminiImageTierPriceCandidates(tierKey, info.OriginModelName, info.UpstreamModelName)...); !ok {
+		return fmt.Errorf("model price is required for %s", info.OriginModelName+tierKey)
+	}
+	return nil
+}
+
+func (a *TaskAdaptor) ResolveBillingModelName(info *relaycommon.RelayInfo) string {
+	if info == nil || !isGeminiImageTaskModel(info.UpstreamModelName) {
+		return ""
+	}
+	for _, name := range geminiImageModelPriceCandidates(info.OriginModelName, info.UpstreamModelName) {
+		if _, ok := lookupGeminiConfiguredModelPrice(name); ok {
+			return name
+		}
+	}
+	return info.OriginModelName
+}
+
+func (a *TaskAdaptor) InitialTaskInfo() *relaycommon.TaskInfo {
+	return a.initialTaskInfo
+}
+
+type geminiImageTaskResponse struct {
+	RequestID   string                 `json:"requestId,omitempty"`
+	ModelCode   string                 `json:"modelCode,omitempty"`
+	Status      string                 `json:"status,omitempty"`
+	Progress    int                    `json:"progress,omitempty"`
+	ResultCount int                    `json:"resultCount,omitempty"`
+	Result      map[string]interface{} `json:"result,omitempty"`
+	URL         string                 `json:"url,omitempty"`
+	Error       *struct {
+		Message string `json:"message,omitempty"`
+		Code    string `json:"code,omitempty"`
+	} `json:"error,omitempty"`
+}
+
+func isGeminiImageTaskModel(modelName string) bool {
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	return strings.Contains(modelName, "image") && strings.HasPrefix(modelName, "gemini-")
+}
+
+func buildGeminiImageRequestBody(req relaycommon.TaskSubmitReq) (io.Reader, error) {
+	if strings.TrimSpace(req.Prompt) == "" {
+		return nil, fmt.Errorf("prompt field is required")
+	}
+	parts := make([]dto.GeminiPart, 0, len(geminiImageInputs(req))+1)
+	for _, image := range geminiImageInputs(req) {
+		part, err := geminiImageInputPart(image)
+		if err != nil {
+			return nil, err
+		}
+		parts = append(parts, part)
+	}
+	parts = append(parts, dto.GeminiPart{Text: req.Prompt})
+
+	imageConfig, err := geminiImageConfig(req)
+	if err != nil {
+		return nil, err
+	}
+	geminiReq := dto.GeminiChatRequest{
+		Contents: []dto.GeminiChatContent{
+			{
+				Role:  "user",
+				Parts: parts,
+			},
+		},
+		GenerationConfig: dto.GeminiChatGenerationConfig{
+			ResponseModalities: []string{"IMAGE"},
+			ImageConfig:        imageConfig,
+		},
+	}
+	if req.N > 0 {
+		geminiReq.GenerationConfig.CandidateCount = &req.N
+	}
+	data, err := common.Marshal(geminiReq)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.NewReader(data), nil
+}
+
+func geminiImageInputs(req relaycommon.TaskSubmitReq) []string {
+	images := make([]string, 0, 1+len(req.Images)+len(req.ReferenceImages)+len(req.ReferenceImageURLs))
+	add := func(image string) {
+		image = strings.TrimSpace(image)
+		if image != "" {
+			images = append(images, image)
+		}
+	}
+	add(req.Image)
+	for _, image := range req.Images {
+		add(image)
+	}
+	for _, image := range req.ReferenceImages {
+		add(image)
+	}
+	for _, image := range req.ReferenceImageURLs {
+		add(image)
+	}
+	return uniqueGeminiStrings(images)
+}
+
+func geminiImageInputPart(image string) (dto.GeminiPart, error) {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return dto.GeminiPart{}, fmt.Errorf("image input is empty")
+	}
+	if isHTTPURL(image) {
+		return dto.GeminiPart{
+			FileData: &dto.GeminiFileData{
+				MimeType: inferImageMimeTypeFromURL(image),
+				FileUri:  image,
+			},
+		}, nil
+	}
+	parsed := ParseImageInput(image)
+	if parsed == nil {
+		return dto.GeminiPart{}, fmt.Errorf("invalid image input")
+	}
+	return dto.GeminiPart{
+		InlineData: &dto.GeminiInlineData{
+			MimeType: parsed.MimeType,
+			Data:     parsed.BytesBase64Encoded,
+		},
+	}, nil
+}
+
+func geminiImageConfig(req relaycommon.TaskSubmitReq) ([]byte, error) {
+	config := map[string]string{}
+	if aspect := geminiImageAspect(req.Size, req.AspectRatio); aspect != "" {
+		config["aspectRatio"] = aspect
+	}
+	if size := strings.ToUpper(geminiImageTier(req.Size, req.Resolution)); size != "" {
+		config["imageSize"] = size
+	}
+	if len(config) == 0 {
+		return nil, nil
+	}
+	return common.Marshal(config)
+}
+
+func (a *TaskAdaptor) doImageResponse(c *gin.Context, responseBody []byte, info *relaycommon.RelayInfo) (string, []byte, *dto.TaskError) {
+	var geminiResp dto.GeminiChatResponse
+	if err := common.Unmarshal(responseBody, &geminiResp); err != nil {
+		return "", nil, service.TaskErrorWrapper(errors.Wrapf(err, "body: %s", responseBody), "unmarshal_response_failed", http.StatusInternalServerError)
+	}
+	saved, err := saveGeminiInlineImages(geminiResp)
+	if err != nil {
+		return "", nil, service.TaskErrorWrapper(err, "save_result_file_failed", http.StatusInternalServerError)
+	}
+	publicResp := geminiImagePublicResponse(info.PublicTaskID, info.OriginModelName, saved)
+	taskData, err := common.Marshal(publicResp)
+	if err != nil {
+		return "", nil, service.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+	}
+	a.initialTaskInfo = &relaycommon.TaskInfo{
+		TaskID:   info.PublicTaskID,
+		Status:   model.TaskStatusSuccess,
+		Url:      publicResp.URL,
+		Progress: "100%",
+		Data:     taskData,
+	}
+	c.JSON(http.StatusOK, publicResp)
+	return info.PublicTaskID, taskData, nil
+}
+
+func saveGeminiInlineImages(resp dto.GeminiChatResponse) ([]string, error) {
+	saved := make([]string, 0)
+	for _, candidate := range resp.Candidates {
+		for _, part := range candidate.Content.Parts {
+			if part.InlineData == nil || !strings.HasPrefix(strings.ToLower(part.InlineData.MimeType), "image/") {
+				continue
+			}
+			ossURL, err := service.SaveBase64ImageToAliyunOSS(part.InlineData.Data, part.InlineData.MimeType)
+			if err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(ossURL) == "" {
+				return nil, fmt.Errorf("aliyun oss is not enabled or configured")
+			}
+			saved = append(saved, ossURL)
+		}
+	}
+	if len(saved) == 0 {
+		return nil, fmt.Errorf("completed response contains no result image")
+	}
+	return saved, nil
+}
+
+func geminiImagePublicResponse(requestID, modelCode string, saved []string) geminiImageTaskResponse {
+	items := make([]interface{}, 0, len(saved))
+	for _, url := range saved {
+		items = append(items, map[string]interface{}{
+			"url":  url,
+			"type": "image",
+		})
+	}
+	result := map[string]interface{}{
+		"image_url": saved[0],
+		"items":     items,
+		"url":       saved[0],
+	}
+	if len(saved) > 1 {
+		result["image_urls"] = saved
+	}
+	return geminiImageTaskResponse{
+		RequestID:   requestID,
+		ModelCode:   modelCode,
+		Status:      "succeeded",
+		Progress:    100,
+		ResultCount: len(saved),
+		Result:      result,
+		URL:         saved[0],
+	}
+}
+
+func geminiImageTier(size, resolution string) string {
+	text := strings.ToLower(strings.TrimSpace(firstNonEmpty(resolution, size)))
+	switch {
+	case strings.Contains(text, "4k"):
+		return "4k"
+	case strings.Contains(text, "2k"):
+		return "2k"
+	}
+	if tier := geminiImagePixelTier(text); tier != "" {
+		return tier
+	}
+	return "1k"
+}
+
+func geminiImagePixelTier(text string) string {
+	parts := strings.SplitN(strings.ToLower(strings.TrimSpace(text)), "x", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	w, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
+	h, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if w <= 32 || h <= 32 {
+		return ""
+	}
+	area := w * h
+	switch {
+	case area >= 8_000_000:
+		return "4k"
+	case area >= 2_000_000:
+		return "2k"
+	default:
+		return "1k"
+	}
+}
+
+func geminiImageAspect(size, aspectRatio string) string {
+	if aspect := normalizeGeminiAspectRatio(aspectRatio); aspect != "" {
+		return aspect
+	}
+	return normalizeGeminiAspectRatio(size)
+}
+
+func normalizeGeminiAspectRatio(text string) string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" || text == "auto" {
+		return ""
+	}
+	if idx := strings.Index(text, "-"); idx >= 0 {
+		text = text[:idx]
+	}
+	text = strings.ReplaceAll(text, "_", ":")
+	if strings.Contains(text, "x") {
+		parts := strings.SplitN(text, "x", 2)
+		if len(parts) == 2 {
+			w, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
+			h, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+			if w > 0 && h > 0 {
+				if w <= 32 && h <= 32 {
+					return supportedGeminiAspect(fmt.Sprintf("%d:%d", w, h))
+				}
+				return nearestGeminiAspect(w, h)
+			}
+		}
+	}
+	if strings.Contains(text, ":") {
+		parts := strings.SplitN(text, ":", 2)
+		w, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
+		h, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if w > 0 && h > 0 {
+			return supportedGeminiAspect(fmt.Sprintf("%d:%d", w, h))
+		}
+	}
+	return ""
+}
+
+func supportedGeminiAspect(aspect string) string {
+	switch aspect {
+	case "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9":
+		return aspect
+	default:
+		return ""
+	}
+}
+
+func nearestGeminiAspect(w, h int) string {
+	if w <= 0 || h <= 0 {
+		return ""
+	}
+	ratio := float64(w) / float64(h)
+	bestAspect := ""
+	bestDiff := 10.0
+	for _, item := range []struct {
+		aspect string
+		ratio  float64
+	}{
+		{"1:1", 1},
+		{"2:3", 2.0 / 3.0},
+		{"3:2", 3.0 / 2.0},
+		{"3:4", 3.0 / 4.0},
+		{"4:3", 4.0 / 3.0},
+		{"4:5", 4.0 / 5.0},
+		{"5:4", 5.0 / 4.0},
+		{"9:16", 9.0 / 16.0},
+		{"16:9", 16.0 / 9.0},
+		{"21:9", 21.0 / 9.0},
+	} {
+		diff := ratio - item.ratio
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff < bestDiff {
+			bestDiff = diff
+			bestAspect = item.aspect
+		}
+	}
+	return bestAspect
+}
+
+func geminiImageTierPriceRatio(originModel, upstreamModel string, req relaycommon.TaskSubmitReq) float64 {
+	basePrice, ok := lookupGeminiConfiguredModelPrice(geminiImageModelPriceCandidates(originModel, upstreamModel)...)
+	if !ok || basePrice <= 0 {
+		return 1
+	}
+	tierPrice, ok := lookupGeminiConfiguredModelPrice(geminiImageTierPriceCandidates("@"+geminiImageTier(req.Size, req.Resolution), originModel, upstreamModel)...)
+	if !ok || tierPrice <= 0 {
+		return 1
+	}
+	return tierPrice / basePrice
+}
+
+func geminiImageCountRatio(n int) float64 {
+	if n <= 0 {
+		return 1
+	}
+	return float64(n)
+}
+
+func geminiImageModelPriceCandidates(originModel, upstreamModel string) []string {
+	names := make([]string, 0, 2)
+	for _, name := range []string{originModel, upstreamModel} {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return uniqueGeminiStrings(names)
+}
+
+func geminiImageTierPriceCandidates(tierKey, originModel, upstreamModel string) []string {
+	baseNames := geminiImageModelPriceCandidates(originModel, upstreamModel)
+	names := make([]string, 0, len(baseNames))
+	for _, name := range baseNames {
+		names = append(names, name+tierKey)
+	}
+	return uniqueGeminiStrings(names)
+}
+
+func lookupGeminiConfiguredModelPrice(names ...string) (float64, bool) {
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		if price, ok := ratio_setting.GetModelPrice(name, false); ok {
+			return price, true
+		}
+	}
+	return 0, false
+}
+
+func isHTTPURL(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
+}
+
+func inferImageMimeTypeFromURL(rawURL string) string {
+	lower := strings.ToLower(strings.TrimSpace(rawURL))
+	if idx := strings.Index(lower, "?"); idx >= 0 {
+		lower = lower[:idx]
+	}
+	switch {
+	case strings.HasSuffix(lower, ".jpg"), strings.HasSuffix(lower, ".jpeg"):
+		return "image/jpeg"
+	case strings.HasSuffix(lower, ".png"):
+		return "image/png"
+	case strings.HasSuffix(lower, ".webp"):
+		return "image/webp"
+	case strings.HasSuffix(lower, ".gif"):
+		return "image/gif"
+	default:
+		return ""
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func uniqueGeminiStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 // FetchTask polls task status via the Gemini operations GET endpoint.

@@ -118,6 +118,9 @@ func validateMultipartTaskRequest(c *gin.Context, info *RelayInfo, action string
 	if images := formData["reference_images"]; len(images) > 0 {
 		req.ReferenceImages = images
 	}
+	if images := formData["reference_image_urls"]; len(images) > 0 {
+		req.ReferenceImageURLs = images
+	}
 	if mask := formData.Get("mask"); mask != "" {
 		req.Mask = []byte(strconv.Quote(mask))
 	}
@@ -205,20 +208,21 @@ func ValidateMultipartDirect(c *gin.Context, info *RelayInfo) *dto.TaskError {
 
 func isKnownTaskField(field string) bool {
 	knownFields := map[string]bool{
-		"prompt":           true,
-		"model":            true,
-		"mode":             true,
-		"image":            true,
-		"images":           true,
-		"referenceImages":  true,
-		"reference_images": true,
-		"size":             true,
-		"quality":          true,
-		"aspect_ratio":     true,
-		"resolution":       true,
-		"n":                true,
-		"duration":         true,
-		"input_reference":  true, // Sora 特有字段
+		"prompt":               true,
+		"model":                true,
+		"mode":                 true,
+		"image":                true,
+		"images":               true,
+		"referenceImages":      true,
+		"reference_images":     true,
+		"reference_image_urls": true,
+		"size":                 true,
+		"quality":              true,
+		"aspect_ratio":         true,
+		"resolution":           true,
+		"n":                    true,
+		"duration":             true,
+		"input_reference":      true, // Sora 特有字段
 	}
 	return knownFields[field]
 }

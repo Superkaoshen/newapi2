@@ -1,7 +1,9 @@
 package mihuifang
 
 import (
+	"bytes"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,8 +12,10 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
@@ -606,6 +610,238 @@ func TestValidateBillingRequiresTierPrice(t *testing.T) {
 	err := (&TaskAdaptor{}).ValidateBilling(c, info)
 	if err == nil || !strings.Contains(err.Error(), "gemini-3-pro-image@4k") {
 		t.Fatalf("ValidateBilling error = %v, want missing tier price", err)
+	}
+}
+
+func TestImageOneBuildMultipartRequestBodyKeepsImagesFieldAndMapsOptions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var rawBody bytes.Buffer
+	writer := multipart.NewWriter(&rawBody)
+	_ = writer.WriteField("prompt", "draw a cat")
+	_ = writer.WriteField("model", "gemini-3-pro-image")
+	_ = writer.WriteField("size", "16x9-4K")
+	_ = writer.WriteField("response_format", "b64_json")
+	part, err := writer.CreateFormFile("images", "reference.jpg")
+	if err != nil {
+		t.Fatalf("CreateFormFile error = %v", err)
+	}
+	_, _ = part.Write([]byte("image-bytes"))
+	if err := writer.Close(); err != nil {
+		t.Fatalf("writer.Close error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(rawBody.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = req
+	c.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:          "gemini-3-pro-image",
+		Prompt:         "draw a cat",
+		Size:           "16x9-4K",
+		ResponseFormat: "b64_json",
+	})
+
+	info := &relaycommon.RelayInfo{
+		RelayMode: relayconstant.RelayModeImagesEdits,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "banana-pro",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				ImageTaskProtocol: imageTaskProtocolImageOne,
+			},
+		},
+	}
+
+	body, err := (&TaskAdaptor{}).BuildRequestBody(c, info)
+	if err != nil {
+		t.Fatalf("BuildRequestBody error = %v", err)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read body error = %v", err)
+	}
+	outReq := httptest.NewRequest(http.MethodPost, "/upstream", bytes.NewReader(data))
+	outReq.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
+	form, err := outReq.MultipartReader()
+	if err != nil {
+		t.Fatalf("MultipartReader error = %v", err)
+	}
+	parsed, err := form.ReadForm(1024 * 1024)
+	if err != nil {
+		t.Fatalf("ReadForm error = %v", err)
+	}
+	defer parsed.RemoveAll()
+
+	if got := parsed.Value["model"]; len(got) != 1 || got[0] != "banana-pro" {
+		t.Fatalf("model = %#v, want banana-pro", got)
+	}
+	if got := parsed.Value["aspect_ratio"]; len(got) != 1 || got[0] != "16:9" {
+		t.Fatalf("aspect_ratio = %#v, want 16:9", got)
+	}
+	if got := parsed.Value["resolution"]; len(got) != 1 || got[0] != "4K" {
+		t.Fatalf("resolution = %#v, want 4K", got)
+	}
+	if got := parsed.Value["response_format"]; len(got) != 1 || got[0] != "base64" {
+		t.Fatalf("response_format = %#v, want base64", got)
+	}
+	if len(parsed.File["images"]) != 1 {
+		t.Fatalf("images files = %#v, want one images file", parsed.File)
+	}
+	if len(parsed.File["image"]) != 0 {
+		t.Fatalf("image files = %#v, want no normalized image files", parsed.File["image"])
+	}
+}
+
+func TestImageOneBuildJSONRequestBodyUsesReferenceImageURLs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:              "gemini-3-pro-image",
+		Prompt:             "draw a cat",
+		ReferenceImageURLs: []string{"https://example.com/a.png"},
+		AspectRatio:        "1:1",
+	})
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "banana-pro",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				ImageTaskProtocol: imageTaskProtocolImageOne,
+			},
+		},
+	}
+
+	body, err := (&TaskAdaptor{}).BuildRequestBody(c, info)
+	if err != nil {
+		t.Fatalf("BuildRequestBody error = %v", err)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read body error = %v", err)
+	}
+	var payload map[string]interface{}
+	if err := common.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal body error = %v", err)
+	}
+	if got := payload["model"]; got != "banana-pro" {
+		t.Fatalf("model = %v, want banana-pro", got)
+	}
+	if got := payload["aspect_ratio"]; got != "1:1" {
+		t.Fatalf("aspect_ratio = %v, want 1:1", got)
+	}
+	if got := payload["response_format"]; got != "url" {
+		t.Fatalf("response_format = %v, want url", got)
+	}
+	urls, ok := payload["reference_image_urls"].([]interface{})
+	if !ok || len(urls) != 1 || urls[0] != "https://example.com/a.png" {
+		t.Fatalf("reference_image_urls = %#v, want one URL", payload["reference_image_urls"])
+	}
+}
+
+func TestImageOneDoResponseUsesPublicTaskID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"task_id":"upstream-task","status":"pending"}`)),
+	}
+	info := &relaycommon.RelayInfo{
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+		OriginModelName: "gemini-3-pro-image",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "banana-pro",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				ImageTaskProtocol: imageTaskProtocolImageOne,
+			},
+		},
+	}
+
+	upstreamID, taskData, taskErr := (&TaskAdaptor{}).DoResponse(c, resp, info)
+	if taskErr != nil {
+		t.Fatalf("DoResponse taskErr = %v", taskErr)
+	}
+	if upstreamID != "upstream-task" {
+		t.Fatalf("upstreamID = %q, want upstream-task", upstreamID)
+	}
+	if !strings.Contains(w.Body.String(), `"requestId":"task_public"`) {
+		t.Fatalf("response body = %s, want public task id", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "upstream-task") || strings.Contains(string(taskData), "upstream-task") {
+		t.Fatalf("response leaked upstream task id, body=%s data=%s", w.Body.String(), taskData)
+	}
+}
+
+func TestImageOneFetchTaskUsesStatusEndpoint(t *testing.T) {
+	var gotPath string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte(`{"status":"pending"}`))
+	}))
+	defer ts.Close()
+
+	resp, err := (&TaskAdaptor{}).FetchTask(ts.URL, "sk-test", map[string]any{
+		"task_id":        "abc123",
+		"image_protocol": imageTaskProtocolImageOne,
+	}, "")
+	if err != nil {
+		t.Fatalf("FetchTask error = %v", err)
+	}
+	_ = resp.Body.Close()
+	if gotPath != "/v1/status/abc123" {
+		t.Fatalf("path = %q, want /v1/status/abc123", gotPath)
+	}
+}
+
+func TestImageOneParseTaskResultCompletedURLSavedToOSS(t *testing.T) {
+	oldOptions := snapshotOSSOptions()
+	defer restoreOSSOptions(oldOptions)
+
+	var uploaded int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"))
+		case http.MethodPut:
+			uploaded++
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer ts.Close()
+	restoreFetch := allowTestServerPort(t, ts.URL)
+	defer restoreFetch()
+	oldMaxFileDownloadMB := constant.MaxFileDownloadMB
+	constant.MaxFileDownloadMB = 1
+	defer func() { constant.MaxFileDownloadMB = oldMaxFileDownloadMB }()
+	service.InitHttpClient()
+
+	setOSSOptions(map[string]string{
+		"AliyunOssEnabled":         "true",
+		"AliyunOssEndpoint":        ts.URL,
+		"AliyunOssBucket":          "127",
+		"AliyunOssAccessKeyId":     "id",
+		"AliyunOssAccessKeySecret": "secret",
+		"AliyunOssPathPrefix":      "async-images",
+		"AliyunOssPublicBaseUrl":   "https://cdn.example.com",
+	})
+
+	body := `{"task_id":"upstream","status":"completed","images":[{"url":"` + ts.URL + `/a.png"}]}`
+	ti, err := (&TaskAdaptor{}).ParseTaskResult([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseTaskResult error = %v", err)
+	}
+	if ti.Status != model.TaskStatusSuccess {
+		t.Fatalf("status = %s, want %s, reason=%s", ti.Status, model.TaskStatusSuccess, ti.Reason)
+	}
+	if uploaded != 1 {
+		t.Fatalf("uploaded = %d, want 1", uploaded)
+	}
+	if strings.Contains(string(ti.Data), ts.URL) {
+		t.Fatalf("response data leaked upstream url: %s", ti.Data)
+	}
+	if !strings.Contains(string(ti.Data), "https://cdn.example.com/async-images/") {
+		t.Fatalf("response data does not contain OSS URL: %s", ti.Data)
 	}
 }
 

@@ -26,11 +26,17 @@ import (
 )
 
 type TaskSubmitResult struct {
-	UpstreamTaskID string
-	TaskData       []byte
-	Platform       constant.TaskPlatform
-	Quota          int
+	UpstreamTaskID  string
+	TaskData        []byte
+	Platform        constant.TaskPlatform
+	Quota           int
+	ImageProtocol   string
+	InitialTaskInfo *relaycommon.TaskInfo
 	//PerCallPrice   types.PriceData
+}
+
+type taskInitialInfoProvider interface {
+	InitialTaskInfo() *relaycommon.TaskInfo
 }
 
 // ResolveOriginTask 处理基于已有任务的提交（remix / continuation）：
@@ -258,6 +264,10 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if taskErr != nil {
 		return nil, taskErr
 	}
+	var initialTaskInfo *relaycommon.TaskInfo
+	if provider, ok := adaptor.(taskInitialInfoProvider); ok {
+		initialTaskInfo = provider.InitialTaskInfo()
+	}
 
 	// 11. 提交后计费调整：让适配器根据上游实际返回调整 OtherRatios
 	finalQuota := info.PriceData.Quota
@@ -269,11 +279,20 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 
 	return &TaskSubmitResult{
-		UpstreamTaskID: upstreamTaskID,
-		TaskData:       taskData,
-		Platform:       platform,
-		Quota:          finalQuota,
+		UpstreamTaskID:  upstreamTaskID,
+		TaskData:        taskData,
+		Platform:        platform,
+		Quota:           finalQuota,
+		ImageProtocol:   relayImageProtocol(info),
+		InitialTaskInfo: initialTaskInfo,
 	}, nil
+}
+
+func relayImageProtocol(info *relaycommon.RelayInfo) string {
+	if info == nil {
+		return ""
+	}
+	return strings.TrimSpace(info.ChannelOtherSettings.ImageTaskProtocol)
 }
 
 // recalcQuotaFromRatios 根据 adjustedRatios 重新计算 quota。
@@ -479,8 +498,9 @@ func tryUpdateAsyncImageTask(task *model.Task) error {
 		key = task.PrivateData.Key
 	}
 	resp, err := adaptor.FetchTask(baseURL, key, map[string]any{
-		"task_id": task.GetUpstreamTaskID(),
-		"action":  task.Action,
+		"task_id":        task.GetUpstreamTaskID(),
+		"action":         task.Action,
+		"image_protocol": task.PrivateData.ImageProtocol,
 	}, channelModel.GetSetting().Proxy)
 	if err != nil {
 		return err
@@ -562,6 +582,10 @@ func applyTaskInfoToAsyncImageTask(task *model.Task, taskResult *relaycommon.Tas
 	}
 }
 
+func ApplyTaskInfoToTask(task *model.Task, taskResult *relaycommon.TaskInfo, fallbackBody []byte) {
+	applyTaskInfoToAsyncImageTask(task, taskResult, fallbackBody)
+}
+
 // tryRealtimeFetch 尝试从上游实时拉取 Gemini/Vertex 任务状态。
 // 仅当渠道类型为 Gemini 或 Vertex 时触发；其他渠道或出错时返回 nil。
 // 当非 OpenAI Video API 时，还会构建自定义格式的响应体。
@@ -585,8 +609,9 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 	}
 
 	resp, err := adaptor.FetchTask(baseURL, channelModel.Key, map[string]any{
-		"task_id": task.GetUpstreamTaskID(),
-		"action":  task.Action,
+		"task_id":        task.GetUpstreamTaskID(),
+		"action":         task.Action,
+		"image_protocol": task.PrivateData.ImageProtocol,
 	}, proxy)
 	if err != nil || resp == nil {
 		return nil

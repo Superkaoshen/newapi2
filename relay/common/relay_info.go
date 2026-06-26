@@ -682,24 +682,25 @@ type TaskRelayInfo struct {
 }
 
 type TaskSubmitReq struct {
-	Prompt          string                 `json:"prompt"`
-	Model           string                 `json:"model,omitempty"`
-	Mode            string                 `json:"mode,omitempty"`
-	Image           string                 `json:"image,omitempty"`
-	Images          []string               `json:"images,omitempty"`
-	ReferenceImages []string               `json:"referenceImages,omitempty"`
-	Size            string                 `json:"size,omitempty"`
-	Quality         string                 `json:"quality,omitempty"`
-	ResponseFormat  string                 `json:"response_format,omitempty"`
-	Mask            json.RawMessage        `json:"mask,omitempty"`
-	OutputPSD       *bool                  `json:"output_psd,omitempty"`
-	AspectRatio     string                 `json:"aspect_ratio,omitempty"`
-	Resolution      string                 `json:"resolution,omitempty"`
-	N               int                    `json:"n,omitempty"`
-	Duration        int                    `json:"duration,omitempty"`
-	Seconds         string                 `json:"seconds,omitempty"`
-	InputReference  string                 `json:"input_reference,omitempty"`
-	Metadata        map[string]interface{} `json:"metadata,omitempty"`
+	Prompt             string                 `json:"prompt"`
+	Model              string                 `json:"model,omitempty"`
+	Mode               string                 `json:"mode,omitempty"`
+	Image              string                 `json:"image,omitempty"`
+	Images             []string               `json:"images,omitempty"`
+	ReferenceImages    []string               `json:"referenceImages,omitempty"`
+	ReferenceImageURLs []string               `json:"reference_image_urls,omitempty"`
+	Size               string                 `json:"size,omitempty"`
+	Quality            string                 `json:"quality,omitempty"`
+	ResponseFormat     string                 `json:"response_format,omitempty"`
+	Mask               json.RawMessage        `json:"mask,omitempty"`
+	OutputPSD          *bool                  `json:"output_psd,omitempty"`
+	AspectRatio        string                 `json:"aspect_ratio,omitempty"`
+	Resolution         string                 `json:"resolution,omitempty"`
+	N                  int                    `json:"n,omitempty"`
+	Duration           int                    `json:"duration,omitempty"`
+	Seconds            string                 `json:"seconds,omitempty"`
+	InputReference     string                 `json:"input_reference,omitempty"`
+	Metadata           map[string]interface{} `json:"metadata,omitempty"`
 }
 
 func (t *TaskSubmitReq) GetPrompt() string {
@@ -707,7 +708,7 @@ func (t *TaskSubmitReq) GetPrompt() string {
 }
 
 func (t *TaskSubmitReq) HasImage() bool {
-	return strings.TrimSpace(t.Image) != "" || len(t.Images) > 0 || len(t.ReferenceImages) > 0
+	return strings.TrimSpace(t.Image) != "" || len(t.Images) > 0 || len(t.ReferenceImages) > 0 || len(t.ReferenceImageURLs) > 0
 }
 
 func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
@@ -719,6 +720,7 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 		Images               []string               `json:"images,omitempty"`
 		ReferenceImages      []string               `json:"referenceImages,omitempty"`
 		ReferenceImagesSnake []string               `json:"reference_images,omitempty"`
+		ReferenceImageURLs   []string               `json:"reference_image_urls,omitempty"`
 		Size                 string                 `json:"size,omitempty"`
 		Quality              string                 `json:"quality,omitempty"`
 		ResponseFormat       string                 `json:"response_format,omitempty"`
@@ -743,6 +745,7 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 	t.Mode = aux.Mode
 	t.Images = aux.Images
 	t.ReferenceImages = aux.ReferenceImages
+	t.ReferenceImageURLs = aux.ReferenceImageURLs
 	t.Size = aux.Size
 	t.Quality = aux.Quality
 	t.ResponseFormat = aux.ResponseFormat
