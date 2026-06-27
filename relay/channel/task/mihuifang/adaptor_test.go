@@ -736,6 +736,65 @@ func TestImageOneBuildJSONRequestBodyUsesReferenceImageURLs(t *testing.T) {
 	}
 }
 
+func TestImageOneBuildJSONRequestBodyMapsAutoSize(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:              "gemini-3-pro-image",
+		Prompt:             "draw a cat",
+		ReferenceImageURLs: []string{"https://example.com/a.png"},
+		Size:               "auto-4k",
+	})
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "banana-pro",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				ImageTaskProtocol: imageTaskProtocolImageOne,
+			},
+		},
+	}
+
+	body, err := (&TaskAdaptor{}).BuildRequestBody(c, info)
+	if err != nil {
+		t.Fatalf("BuildRequestBody error = %v", err)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read body error = %v", err)
+	}
+	var payload map[string]interface{}
+	if err := common.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal body error = %v", err)
+	}
+	if got := payload["aspect_ratio"]; got != "auto" {
+		t.Fatalf("aspect_ratio = %v, want auto; body=%s", got, data)
+	}
+	if got := payload["resolution"]; got != "4K" {
+		t.Fatalf("resolution = %v, want 4K; body=%s", got, data)
+	}
+	if _, ok := payload["size"]; ok {
+		t.Fatalf("body should not pass legacy size field upstream: %s", data)
+	}
+}
+
+func TestNormalizeImageOneMultipartFieldsMapsAutoSize(t *testing.T) {
+	fields := normalizeImageOneMultipartFields(map[string][]string{
+		"prompt":               {"draw a cat"},
+		"size":                 {"auto-4k"},
+		"reference_image_urls": {"https://example.com/a.png"},
+	})
+
+	if got := fields["aspect_ratio"]; len(got) != 1 || got[0] != "auto" {
+		t.Fatalf("aspect_ratio = %#v, want auto", got)
+	}
+	if got := fields["resolution"]; len(got) != 1 || got[0] != "4K" {
+		t.Fatalf("resolution = %#v, want 4K", got)
+	}
+	if _, ok := fields["size"]; ok {
+		t.Fatalf("size field should be removed after normalization: %#v", fields["size"])
+	}
+}
+
 func TestImageOneDoResponseUsesPublicTaskID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

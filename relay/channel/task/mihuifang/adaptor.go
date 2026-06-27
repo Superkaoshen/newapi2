@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -1521,6 +1522,16 @@ func imageTierFromText(text string) string {
 
 func imageAspectFromText(text string) string {
 	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return ""
+	}
+	for _, part := range strings.FieldsFunc(text, func(r rune) bool {
+		return r == '-' || r == '_' || unicode.IsSpace(r)
+	}) {
+		if part == "auto" {
+			return "auto"
+		}
+	}
 	matches := aspectRatioRe.FindStringSubmatch(text)
 	if len(matches) != 5 {
 		return ""

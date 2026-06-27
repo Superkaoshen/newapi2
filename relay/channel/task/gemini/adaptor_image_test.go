@@ -106,6 +106,33 @@ func TestGeminiImagePixelSizeMapsTierAndAspect(t *testing.T) {
 	}
 }
 
+func TestGeminiImageAutoSizeMapsTierWithoutFixedAspect(t *testing.T) {
+	req := relaycommon.TaskSubmitReq{
+		Prompt: "draw",
+		Size:   "auto-4k",
+	}
+	body, err := buildGeminiImageRequestBody(req)
+	if err != nil {
+		t.Fatalf("buildGeminiImageRequestBody error = %v", err)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read body error = %v", err)
+	}
+	var payload map[string]interface{}
+	if err := common.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal body error = %v", err)
+	}
+	config := payload["generationConfig"].(map[string]interface{})
+	imageConfig := config["imageConfig"].(map[string]interface{})
+	if _, ok := imageConfig["aspectRatio"]; ok {
+		t.Fatalf("aspectRatio should be omitted for auto ratio: %v", imageConfig["aspectRatio"])
+	}
+	if got := imageConfig["imageSize"]; got != "4K" {
+		t.Fatalf("imageSize = %v, want 4K", got)
+	}
+}
+
 func TestGeminiImageDoResponseStoresInitialSuccessTaskInfo(t *testing.T) {
 	oldOptions := snapshotGeminiOSSOptions()
 	defer setGeminiOSSOptions(oldOptions)
