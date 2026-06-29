@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel"
+	taskgemini "github.com/QuantumNous/new-api/relay/channel/task/gemini"
 	taskmihuifang "github.com/QuantumNous/new-api/relay/channel/task/mihuifang"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -26,17 +27,29 @@ import (
 )
 
 type TaskSubmitResult struct {
-	UpstreamTaskID  string
-	TaskData        []byte
-	Platform        constant.TaskPlatform
-	Quota           int
-	ImageProtocol   string
-	InitialTaskInfo *relaycommon.TaskInfo
+	UpstreamTaskID   string
+	TaskData         []byte
+	Platform         constant.TaskPlatform
+	Quota            int
+	ImageProtocol    string
+	InitialTaskInfo  *relaycommon.TaskInfo
+	postInsertRunner taskPostInsertRunner
 	//PerCallPrice   types.PriceData
 }
 
 type taskInitialInfoProvider interface {
 	InitialTaskInfo() *relaycommon.TaskInfo
+}
+
+type taskPostInsertRunner interface {
+	RunTaskAfterInsert(task *model.Task)
+}
+
+func RunTaskAfterInsert(result *TaskSubmitResult, task *model.Task) {
+	if result == nil || result.postInsertRunner == nil || task == nil {
+		return
+	}
+	result.postInsertRunner.RunTaskAfterInsert(task)
 }
 
 // ResolveOriginTask 处理基于已有任务的提交（remix / continuation）：
@@ -268,6 +281,10 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if provider, ok := adaptor.(taskInitialInfoProvider); ok {
 		initialTaskInfo = provider.InitialTaskInfo()
 	}
+	var postInsertRunner taskPostInsertRunner
+	if runner, ok := adaptor.(taskPostInsertRunner); ok {
+		postInsertRunner = runner
+	}
 
 	// 11. 提交后计费调整：让适配器根据上游实际返回调整 OtherRatios
 	finalQuota := info.PriceData.Quota
@@ -279,12 +296,13 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 
 	return &TaskSubmitResult{
-		UpstreamTaskID:  upstreamTaskID,
-		TaskData:        taskData,
-		Platform:        platform,
-		Quota:           finalQuota,
-		ImageProtocol:   relayImageProtocol(info),
-		InitialTaskInfo: initialTaskInfo,
+		UpstreamTaskID:   upstreamTaskID,
+		TaskData:         taskData,
+		Platform:         platform,
+		Quota:            finalQuota,
+		ImageProtocol:    relayImageProtocol(info),
+		InitialTaskInfo:  initialTaskInfo,
+		postInsertRunner: postInsertRunner,
 	}, nil
 }
 
@@ -472,6 +490,10 @@ func asyncImageFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskRe
 		_ = tryUpdateAsyncImageTask(originTask)
 	}
 
+	if taskgemini.IsImageTaskModel(originTask.Properties.UpstreamModelName) {
+		respBody = taskgemini.ConvertStoredImageTask(originTask)
+		return
+	}
 	respBody = taskmihuifang.ConvertStoredTask(originTask)
 	return
 }
@@ -480,6 +502,9 @@ func tryUpdateAsyncImageTask(task *model.Task) error {
 	channelModel, err := model.GetChannelById(task.ChannelId, true)
 	if err != nil {
 		return err
+	}
+	if channelModel.Type == constant.ChannelTypeGemini && taskgemini.IsImageTaskModel(task.Properties.UpstreamModelName) {
+		return nil
 	}
 	if channelModel.Type != constant.ChannelTypeMihuifang {
 		return nil

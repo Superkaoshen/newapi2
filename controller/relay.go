@@ -605,6 +605,8 @@ func RelayTask(c *gin.Context) {
 		}
 		if insertErr := task.Insert(); insertErr != nil {
 			common.SysError("insert task error: " + insertErr.Error())
+		} else {
+			relay.RunTaskAfterInsert(result, task)
 		}
 	}
 

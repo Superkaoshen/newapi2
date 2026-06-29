@@ -161,17 +161,7 @@ func TestGeminiImageDoResponseStoresInitialSuccessTaskInfo(t *testing.T) {
 		"AliyunOssPublicBaseUrl":   "https://cdn.example.com",
 	})
 
-	gin.SetMode(gin.TestMode)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	info := &relaycommon.RelayInfo{
-		OriginModelName: "gemini-3-pro-image-preview",
-		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gemini-3-pro-image-preview"},
-		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
-	}
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Body: io.NopCloser(strings.NewReader(`{
+	responseBody := []byte(`{
 			"candidates": [{
 				"content": {
 					"parts": [{
@@ -182,8 +172,36 @@ func TestGeminiImageDoResponseStoresInitialSuccessTaskInfo(t *testing.T) {
 					}]
 				}
 			}]
-		}`)),
+		}`)
+
+	taskInfo, taskData, err := parseGeminiImageCompletion("task_public", "gemini-3-pro-image-preview", responseBody)
+	if err != nil {
+		t.Fatalf("parseGeminiImageCompletion error = %v", err)
 	}
+	if uploaded != 1 {
+		t.Fatalf("uploaded = %d, want 1", uploaded)
+	}
+	if taskInfo.Status != model.TaskStatusSuccess || taskInfo.Progress != "100%" {
+		t.Fatalf("task status/progress = %s/%s", taskInfo.Status, taskInfo.Progress)
+	}
+	if !strings.Contains(string(taskData), "https://cdn.example.com/async-images/") {
+		t.Fatalf("taskData does not contain OSS URL: %s", taskData)
+	}
+	if strings.Contains(string(taskData), "iVBOR") {
+		t.Fatalf("taskData leaked raw base64: %s", taskData)
+	}
+}
+
+func TestGeminiImageDoResponseReturnsSubmittedWithoutWaiting(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gemini-3-pro-image-preview",
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gemini-3-pro-image-preview"},
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+	}
+	resp := newGeminiImageSubmittedHTTPResponse("task_public")
 
 	adaptor := &TaskAdaptor{}
 	upstreamID, taskData, taskErr := adaptor.DoResponse(c, resp, info)
@@ -193,18 +211,15 @@ func TestGeminiImageDoResponseStoresInitialSuccessTaskInfo(t *testing.T) {
 	if upstreamID != "task_public" {
 		t.Fatalf("upstreamID = %q, want public task id", upstreamID)
 	}
-	if uploaded != 1 {
-		t.Fatalf("uploaded = %d, want 1", uploaded)
-	}
 	initial := adaptor.InitialTaskInfo()
 	if initial == nil {
 		t.Fatal("InitialTaskInfo is nil")
 	}
-	if initial.Status != model.TaskStatusSuccess || initial.Progress != "100%" {
+	if initial.Status != model.TaskStatusSubmitted || initial.Progress != "10%" {
 		t.Fatalf("initial status/progress = %s/%s", initial.Status, initial.Progress)
 	}
-	if !strings.Contains(string(taskData), "https://cdn.example.com/async-images/") {
-		t.Fatalf("taskData does not contain OSS URL: %s", taskData)
+	if !strings.Contains(w.Body.String(), `"status":"submitted"`) {
+		t.Fatalf("response body = %s, want submitted", w.Body.String())
 	}
 	if strings.Contains(string(taskData), "iVBOR") {
 		t.Fatalf("taskData leaked raw base64: %s", taskData)

@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel"
 	taskcommon "github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
@@ -34,6 +36,17 @@ type TaskAdaptor struct {
 	apiKey          string
 	baseURL         string
 	initialTaskInfo *relaycommon.TaskInfo
+	asyncImageBody  []byte
+	asyncImageInfo  asyncGeminiImageInfo
+}
+
+type asyncGeminiImageInfo struct {
+	BaseURL      string
+	APIKey       string
+	Model        string
+	PublicModel  string
+	PublicTaskID string
+	Proxy        string
 }
 
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
@@ -87,7 +100,24 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		return nil, fmt.Errorf("unexpected task_request type")
 	}
 	if isGeminiImageTaskModel(info.UpstreamModelName) {
-		return buildGeminiImageRequestBody(req)
+		body, err := buildGeminiImageRequestBody(req)
+		if err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(body)
+		if err != nil {
+			return nil, err
+		}
+		a.asyncImageBody = data
+		a.asyncImageInfo = asyncGeminiImageInfo{
+			BaseURL:      a.baseURL,
+			APIKey:       a.apiKey,
+			Model:        info.UpstreamModelName,
+			PublicModel:  info.OriginModelName,
+			PublicTaskID: info.PublicTaskID,
+			Proxy:        info.ChannelSetting.Proxy,
+		}
+		return bytes.NewReader(data), nil
 	}
 
 	instance := VeoInstance{Prompt: req.Prompt}
@@ -130,6 +160,9 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 
 // DoRequest delegates to common helper.
 func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	if isGeminiImageTaskModel(info.UpstreamModelName) {
+		return newGeminiImageSubmittedHTTPResponse(info.PublicTaskID), nil
+	}
 	return channel.DoTaskApiRequest(a, c, info, requestBody)
 }
 
@@ -141,7 +174,7 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	}
 	_ = resp.Body.Close()
 	if isGeminiImageTaskModel(info.UpstreamModelName) {
-		return a.doImageResponse(c, responseBody, info)
+		return a.doImageSubmitResponse(c, responseBody, info)
 	}
 
 	var s submitResponse
@@ -236,6 +269,15 @@ func (a *TaskAdaptor) InitialTaskInfo() *relaycommon.TaskInfo {
 	return a.initialTaskInfo
 }
 
+func (a *TaskAdaptor) RunTaskAfterInsert(task *model.Task) {
+	if task == nil || len(a.asyncImageBody) == 0 || !isGeminiImageTaskModel(a.asyncImageInfo.Model) {
+		return
+	}
+	body := append([]byte(nil), a.asyncImageBody...)
+	info := a.asyncImageInfo
+	go runGeminiImageTask(context.Background(), task.ID, body, info)
+}
+
 type geminiImageTaskResponse struct {
 	RequestID   string                 `json:"requestId,omitempty"`
 	ModelCode   string                 `json:"modelCode,omitempty"`
@@ -248,6 +290,202 @@ type geminiImageTaskResponse struct {
 		Message string `json:"message,omitempty"`
 		Code    string `json:"code,omitempty"`
 	} `json:"error,omitempty"`
+}
+
+func newGeminiImageSubmittedHTTPResponse(requestID string) *http.Response {
+	body, _ := common.Marshal(geminiImageTaskResponse{
+		RequestID: requestID,
+		Status:    "submitted",
+		Progress:  0,
+	})
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header:     make(http.Header),
+	}
+}
+
+func (a *TaskAdaptor) doImageSubmitResponse(c *gin.Context, responseBody []byte, info *relaycommon.RelayInfo) (string, []byte, *dto.TaskError) {
+	var upstream geminiImageTaskResponse
+	if err := common.Unmarshal(responseBody, &upstream); err != nil {
+		return "", nil, service.TaskErrorWrapper(errors.Wrapf(err, "body: %s", responseBody), "unmarshal_response_failed", http.StatusInternalServerError)
+	}
+	if strings.TrimSpace(upstream.RequestID) == "" {
+		upstream.RequestID = info.PublicTaskID
+	}
+	upstream.ModelCode = info.OriginModelName
+	upstream.Status = "submitted"
+	upstream.Progress = 0
+	data, err := common.Marshal(upstream)
+	if err != nil {
+		return "", nil, service.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+	}
+	a.initialTaskInfo = &relaycommon.TaskInfo{
+		TaskID:   info.PublicTaskID,
+		Status:   model.TaskStatusSubmitted,
+		Progress: taskcommon.ProgressSubmitted,
+		Data:     data,
+	}
+	c.JSON(http.StatusOK, upstream)
+	return info.PublicTaskID, data, nil
+}
+
+func IsImageTaskModel(modelName string) bool {
+	return isGeminiImageTaskModel(modelName)
+}
+
+func runGeminiImageTask(ctx context.Context, taskID int64, requestBody []byte, info asyncGeminiImageInfo) {
+	task := &model.Task{}
+	if err := model.DB.First(task, taskID).Error; err != nil {
+		logger.LogError(ctx, fmt.Sprintf("get gemini image task failed: %s", err.Error()))
+		return
+	}
+	updateTask := func(taskInfo *relaycommon.TaskInfo, fallback []byte) {
+		snap := task.Snapshot()
+		applyGeminiImageTaskInfo(task, taskInfo, fallback)
+		if !snap.Equal(task.Snapshot()) {
+			won, updateErr := task.UpdateWithStatus(snap.Status)
+			if updateErr != nil {
+				logger.LogError(ctx, fmt.Sprintf("update gemini image task %s failed: %s", task.TaskID, updateErr.Error()))
+				return
+			}
+			if won && snap.Status != task.Status {
+				switch task.Status {
+				case model.TaskStatusFailure:
+					if task.Quota != 0 {
+						service.RefundTaskQuota(ctx, task, task.FailReason)
+					}
+				case model.TaskStatusSuccess:
+					service.SettleTaskBillingOnComplete(ctx, &TaskAdaptor{}, task, taskInfo)
+				}
+			}
+		}
+	}
+
+	updateTask(&relaycommon.TaskInfo{Status: model.TaskStatusInProgress, Progress: taskcommon.ProgressInProgress}, nil)
+	respBody, err := callGeminiImageGenerate(ctx, requestBody, info)
+	if err != nil {
+		updateTask(failedGeminiImageTaskInfo(task.TaskID, info.PublicModel, err), nil)
+		return
+	}
+	taskInfo, data, err := parseGeminiImageCompletion(task.TaskID, info.PublicModel, respBody)
+	if err != nil {
+		updateTask(failedGeminiImageTaskInfo(task.TaskID, info.PublicModel, err), nil)
+		return
+	}
+	updateTask(taskInfo, data)
+}
+
+func callGeminiImageGenerate(ctx context.Context, requestBody []byte, info asyncGeminiImageInfo) ([]byte, error) {
+	version := model_setting.GetGeminiVersionSetting(info.Model)
+	url := fmt.Sprintf("%s/%s/models/%s:generateContent", info.BaseURL, version, info.Model)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(requestBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("x-goog-api-key", info.APIKey)
+	client, err := service.GetHttpClientWithProxy(info.Proxy)
+	if err != nil {
+		return nil, fmt.Errorf("new proxy http client failed: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("gemini image status %d: %s", resp.StatusCode, string(body))
+	}
+	return body, nil
+}
+
+func parseGeminiImageCompletion(requestID, modelCode string, responseBody []byte) (*relaycommon.TaskInfo, []byte, error) {
+	var geminiResp dto.GeminiChatResponse
+	if err := common.Unmarshal(responseBody, &geminiResp); err != nil {
+		return nil, nil, errors.Wrapf(err, "body: %s", responseBody)
+	}
+	saved, err := saveGeminiInlineImages(geminiResp)
+	if err != nil {
+		return nil, nil, err
+	}
+	publicResp := geminiImagePublicResponse(requestID, modelCode, saved)
+	data, err := common.Marshal(publicResp)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &relaycommon.TaskInfo{
+		TaskID:   requestID,
+		Status:   model.TaskStatusSuccess,
+		Url:      publicResp.URL,
+		Progress: taskcommon.ProgressComplete,
+		Data:     data,
+	}, data, nil
+}
+
+func failedGeminiImageTaskInfo(requestID, modelCode string, err error) *relaycommon.TaskInfo {
+	resp := geminiImageTaskResponse{
+		RequestID: requestID,
+		ModelCode: modelCode,
+		Status:    "failed",
+		Progress:  100,
+		Error: &struct {
+			Message string `json:"message,omitempty"`
+			Code    string `json:"code,omitempty"`
+		}{Message: err.Error(), Code: "task_failed"},
+	}
+	data, _ := common.Marshal(resp)
+	return &relaycommon.TaskInfo{
+		TaskID:   requestID,
+		Status:   model.TaskStatusFailure,
+		Reason:   err.Error(),
+		Progress: taskcommon.ProgressComplete,
+		Data:     data,
+	}
+}
+
+func applyGeminiImageTaskInfo(task *model.Task, taskInfo *relaycommon.TaskInfo, fallback []byte) {
+	if taskInfo == nil {
+		return
+	}
+	now := time.Now().Unix()
+	if taskInfo.Status != "" {
+		task.Status = model.TaskStatus(taskInfo.Status)
+	}
+	switch task.Status {
+	case model.TaskStatusSuccess:
+		task.Progress = taskcommon.ProgressComplete
+		if task.FinishTime == 0 {
+			task.FinishTime = now
+		}
+		task.PrivateData.ResultURL = taskInfo.Url
+	case model.TaskStatusFailure:
+		task.Progress = taskcommon.ProgressComplete
+		if task.FinishTime == 0 {
+			task.FinishTime = now
+		}
+		task.FailReason = taskInfo.Reason
+	case model.TaskStatusInProgress:
+		task.Progress = taskcommon.ProgressInProgress
+		if task.StartTime == 0 {
+			task.StartTime = now
+		}
+	case model.TaskStatusQueued, model.TaskStatusSubmitted:
+		task.Progress = taskcommon.ProgressQueued
+	}
+	if taskInfo.Progress != "" {
+		task.Progress = taskInfo.Progress
+	}
+	if len(taskInfo.Data) > 0 {
+		task.Data = taskInfo.Data
+	} else if len(fallback) > 0 {
+		task.Data = fallback
+	}
 }
 
 func isGeminiImageTaskModel(modelName string) bool {
@@ -427,6 +665,65 @@ func geminiImagePublicResponse(requestID, modelCode string, saved []string) gemi
 		ResultCount: len(saved),
 		Result:      result,
 		URL:         saved[0],
+	}
+}
+
+func ConvertStoredImageTask(task *model.Task) []byte {
+	if len(task.Data) > 0 {
+		var resp geminiImageTaskResponse
+		if err := common.Unmarshal(task.Data, &resp); err == nil {
+			resp.RequestID = task.TaskID
+			resp.ModelCode = publicGeminiImageTaskModel(task)
+			applyGeminiImageTaskStatus(&resp, task)
+			data, err := common.Marshal(resp)
+			if err == nil {
+				return data
+			}
+		}
+	}
+	resp := geminiImageTaskResponse{
+		RequestID: task.TaskID,
+		ModelCode: publicGeminiImageTaskModel(task),
+	}
+	applyGeminiImageTaskStatus(&resp, task)
+	data, _ := common.Marshal(resp)
+	return data
+}
+
+func publicGeminiImageTaskModel(task *model.Task) string {
+	if task == nil {
+		return ""
+	}
+	if task.Properties.OriginModelName != "" {
+		return task.Properties.OriginModelName
+	}
+	return task.Properties.UpstreamModelName
+}
+
+func applyGeminiImageTaskStatus(resp *geminiImageTaskResponse, task *model.Task) {
+	switch task.Status {
+	case model.TaskStatusSuccess:
+		resp.Status = "succeeded"
+		resp.Progress = 100
+	case model.TaskStatusFailure:
+		resp.Status = "failed"
+		resp.Progress = 100
+		if resp.Error == nil && task.FailReason != "" {
+			resp.Error = &struct {
+				Message string `json:"message,omitempty"`
+				Code    string `json:"code,omitempty"`
+			}{Message: task.FailReason, Code: "task_failed"}
+		}
+	case model.TaskStatusInProgress:
+		resp.Status = "processing"
+		if resp.Progress == 0 {
+			resp.Progress = 30
+		}
+	default:
+		resp.Status = "pending"
+		if resp.Progress == 0 {
+			resp.Progress = 0
+		}
 	}
 }
 
