@@ -160,7 +160,7 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 
 // DoRequest delegates to common helper.
 func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Response, error) {
-	if isGeminiImageTaskModel(info.UpstreamModelName) {
+	if a.hasAsyncImageTask() {
 		return newGeminiImageSubmittedHTTPResponse(info.PublicTaskID), nil
 	}
 	return channel.DoTaskApiRequest(a, c, info, requestBody)
@@ -173,7 +173,7 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 		return "", nil, service.TaskErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
 	_ = resp.Body.Close()
-	if isGeminiImageTaskModel(info.UpstreamModelName) {
+	if a.hasAsyncImageTask() || isGeminiImageTaskModel(info.UpstreamModelName) {
 		return a.doImageSubmitResponse(c, responseBody, info)
 	}
 
@@ -269,8 +269,12 @@ func (a *TaskAdaptor) InitialTaskInfo() *relaycommon.TaskInfo {
 	return a.initialTaskInfo
 }
 
+func (a *TaskAdaptor) hasAsyncImageTask() bool {
+	return len(a.asyncImageBody) > 0 && strings.TrimSpace(a.asyncImageInfo.Model) != ""
+}
+
 func (a *TaskAdaptor) RunTaskAfterInsert(task *model.Task) {
-	if task == nil || len(a.asyncImageBody) == 0 || !isGeminiImageTaskModel(a.asyncImageInfo.Model) {
+	if task == nil || !a.hasAsyncImageTask() {
 		return
 	}
 	body := append([]byte(nil), a.asyncImageBody...)
@@ -340,6 +344,8 @@ func runGeminiImageTask(ctx context.Context, taskID int64, requestBody []byte, i
 		logger.LogError(ctx, fmt.Sprintf("get gemini image task failed: %s", err.Error()))
 		return
 	}
+	progressDone := make(chan struct{})
+	defer close(progressDone)
 	updateTask := func(taskInfo *relaycommon.TaskInfo, fallback []byte) {
 		snap := task.Snapshot()
 		applyGeminiImageTaskInfo(task, taskInfo, fallback)
@@ -363,6 +369,7 @@ func runGeminiImageTask(ctx context.Context, taskID int64, requestBody []byte, i
 	}
 
 	updateTask(&relaycommon.TaskInfo{Status: model.TaskStatusInProgress, Progress: taskcommon.ProgressInProgress}, nil)
+	go simulateGeminiImageProgress(ctx, task.ID, progressDone)
 	respBody, err := callGeminiImageGenerate(ctx, requestBody, info)
 	if err != nil {
 		updateTask(failedGeminiImageTaskInfo(task.TaskID, info.PublicModel, err), nil)
@@ -374,6 +381,37 @@ func runGeminiImageTask(ctx context.Context, taskID int64, requestBody []byte, i
 		return
 	}
 	updateTask(taskInfo, data)
+}
+
+func simulateGeminiImageProgress(ctx context.Context, taskID int64, done <-chan struct{}) {
+	progresses := []string{"45%", "60%", "75%", "88%", "95%"}
+	ticker := time.NewTicker(4 * time.Second)
+	defer ticker.Stop()
+	for _, progress := range progresses {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			task := &model.Task{}
+			if err := model.DB.First(task, taskID).Error; err != nil {
+				logger.LogError(ctx, fmt.Sprintf("get gemini image task for progress failed: %s", err.Error()))
+				return
+			}
+			if task.Status != model.TaskStatusInProgress {
+				return
+			}
+			snap := task.Snapshot()
+			task.Progress = progress
+			won, err := task.UpdateWithStatus(snap.Status)
+			if err != nil {
+				logger.LogError(ctx, fmt.Sprintf("update gemini image task progress %s failed: %s", task.TaskID, err.Error()))
+				return
+			}
+			if !won {
+				return
+			}
+		}
+	}
 }
 
 func callGeminiImageGenerate(ctx context.Context, requestBody []byte, info asyncGeminiImageInfo) ([]byte, error) {
@@ -490,6 +528,10 @@ func applyGeminiImageTaskInfo(task *model.Task, taskInfo *relaycommon.TaskInfo, 
 
 func isGeminiImageTaskModel(modelName string) bool {
 	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	modelName = strings.TrimPrefix(modelName, "models/")
+	if idx := strings.Index(modelName, ":"); idx >= 0 {
+		modelName = modelName[:idx]
+	}
 	return strings.Contains(modelName, "image") && strings.HasPrefix(modelName, "gemini-")
 }
 

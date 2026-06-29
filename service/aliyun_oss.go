@@ -294,16 +294,10 @@ func buildAliyunOssObjectKeyWithFallback(prefix, contentType string, fallbackExt
 }
 
 func imageFileExt(contentType string) string {
-	exts, err := mime.ExtensionsByType(contentType)
-	if err == nil {
-		for _, ext := range exts {
-			if ext != "" {
-				return ext
-			}
-		}
-	}
 	switch contentType {
 	case "image/jpeg":
+		return ".jpg"
+	case "image/jpg":
 		return ".jpg"
 	case "image/png":
 		return ".png"
@@ -323,10 +317,23 @@ func imageFileExt(contentType string) string {
 		return ".zip"
 	case "application/octet-stream":
 		return ".bin"
-	default:
-		if !strings.HasPrefix(contentType, "image/") {
-			return ".bin"
+	}
+	exts, err := mime.ExtensionsByType(contentType)
+	if err == nil {
+		for _, ext := range exts {
+			if ext != "" && ext != ".jfif" {
+				return ext
+			}
 		}
+	}
+	if !strings.HasPrefix(contentType, "image/") {
+		return ".bin"
+	}
+	if strings.Contains(contentType, "jpeg") || strings.Contains(contentType, "jpg") {
+		return ".jpg"
+	}
+	switch contentType {
+	default:
 		return ".png"
 	}
 }
