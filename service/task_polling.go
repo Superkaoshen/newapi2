@@ -97,6 +97,9 @@ func TaskPollingLoop() {
 		allTasks := model.GetAllUnFinishSyncTasks(constant.TaskQueryLimit)
 		platformTask := make(map[constant.TaskPlatform][]*model.Task)
 		for _, t := range allTasks {
+			if isLocalGeminiImageTask(t) {
+				continue
+			}
 			platformTask[t.Platform] = append(platformTask[t.Platform], t)
 		}
 		for platform, tasks := range platformTask {
@@ -135,6 +138,30 @@ func TaskPollingLoop() {
 		}
 		common.SysLog("任务进度轮询完成")
 	}
+}
+
+func isLocalGeminiImageTask(task *model.Task) bool {
+	if task == nil || task.ChannelId <= 0 {
+		return false
+	}
+	if !strings.HasPrefix(task.GetUpstreamTaskID(), "task_") {
+		return false
+	}
+	modelName := strings.ToLower(strings.TrimSpace(firstNonEmpty(task.Properties.UpstreamModelName, task.Properties.OriginModelName)))
+	modelName = strings.TrimPrefix(modelName, "models/")
+	if idx := strings.Index(modelName, ":"); idx >= 0 {
+		modelName = modelName[:idx]
+	}
+	return strings.HasPrefix(modelName, "gemini-") && strings.Contains(modelName, "image")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // DispatchPlatformUpdate 按平台分发轮询更新

@@ -486,16 +486,38 @@ func asyncImageFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskRe
 		return
 	}
 
-	if !taskmihuifang.IsCompletedTask(originTask) {
-		_ = tryUpdateAsyncImageTask(originTask)
-	}
-
 	if taskgemini.IsImageTaskModel(originTask.Properties.UpstreamModelName) {
+		if !taskmihuifang.IsCompletedTask(originTask) {
+			_ = tryResumeGeminiImageTask(originTask)
+		}
 		respBody = taskgemini.ConvertStoredImageTask(originTask)
 		return
 	}
+	if !taskmihuifang.IsCompletedTask(originTask) {
+		_ = tryUpdateAsyncImageTask(originTask)
+	}
 	respBody = taskmihuifang.ConvertStoredTask(originTask)
 	return
+}
+
+func tryResumeGeminiImageTask(task *model.Task) error {
+	channelModel, err := model.GetChannelById(task.ChannelId, true)
+	if err != nil {
+		return err
+	}
+	if channelModel.Type != constant.ChannelTypeGemini {
+		return nil
+	}
+	baseURL := constant.ChannelBaseURLs[channelModel.Type]
+	if channelModel.GetBaseURL() != "" {
+		baseURL = channelModel.GetBaseURL()
+	}
+	key := channelModel.Key
+	if task.PrivateData.Key != "" {
+		key = task.PrivateData.Key
+	}
+	taskgemini.TryResumeImageTask(task, baseURL, key, channelModel.GetSetting().Proxy)
+	return nil
 }
 
 func tryUpdateAsyncImageTask(task *model.Task) error {

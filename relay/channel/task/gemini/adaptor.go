@@ -3,6 +3,7 @@ package gemini
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -294,6 +295,13 @@ func (a *TaskAdaptor) RunTaskAfterInsert(task *model.Task) {
 	}
 	body := append([]byte(nil), a.asyncImageBody...)
 	info := a.asyncImageInfo
+	if strings.TrimSpace(task.PrivateData.RequestBody) == "" {
+		snap := task.Snapshot()
+		task.PrivateData.RequestBody = base64.StdEncoding.EncodeToString(body)
+		if _, err := task.UpdateWithStatus(snap.Status); err != nil {
+			logger.LogError(context.Background(), fmt.Sprintf("persist gemini image request body failed for task %s: %s", task.TaskID, err.Error()))
+		}
+	}
 	go runGeminiImageTask(context.Background(), task.ID, body, info)
 }
 
@@ -357,6 +365,34 @@ func (a *TaskAdaptor) doImageSubmitResponse(c *gin.Context, responseBody []byte,
 
 func IsImageTaskModel(modelName string) bool {
 	return isGeminiImageTaskModel(modelName)
+}
+
+func TryResumeImageTask(task *model.Task, baseURL, apiKey, proxy string) bool {
+	if task == nil || !isGeminiImageTaskModel(task.Properties.UpstreamModelName) {
+		return false
+	}
+	if task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure {
+		return false
+	}
+	requestBody := strings.TrimSpace(task.PrivateData.RequestBody)
+	if requestBody == "" {
+		return false
+	}
+	body, err := base64.StdEncoding.DecodeString(requestBody)
+	if err != nil {
+		logger.LogError(context.Background(), fmt.Sprintf("decode gemini image request body failed for task %s: %s", task.TaskID, err.Error()))
+		return false
+	}
+	info := asyncGeminiImageInfo{
+		BaseURL:      baseURL,
+		APIKey:       apiKey,
+		Model:        task.Properties.UpstreamModelName,
+		PublicModel:  publicGeminiImageTaskModel(task),
+		PublicTaskID: task.TaskID,
+		Proxy:        proxy,
+	}
+	go runGeminiImageTask(context.Background(), task.ID, body, info)
+	return true
 }
 
 func runGeminiImageTask(ctx context.Context, taskID int64, requestBody []byte, info asyncGeminiImageInfo) {
