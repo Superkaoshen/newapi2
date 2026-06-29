@@ -160,7 +160,22 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 
 // DoRequest delegates to common helper.
 func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Response, error) {
-	if a.hasAsyncImageTask() {
+	if a.hasAsyncImageTask() || isGeminiImageTaskModel(info.UpstreamModelName) {
+		if !a.hasAsyncImageTask() {
+			data, err := io.ReadAll(requestBody)
+			if err != nil {
+				return nil, err
+			}
+			a.asyncImageBody = data
+			a.asyncImageInfo = asyncGeminiImageInfo{
+				BaseURL:      a.baseURL,
+				APIKey:       a.apiKey,
+				Model:        info.UpstreamModelName,
+				PublicModel:  info.OriginModelName,
+				PublicTaskID: info.PublicTaskID,
+				Proxy:        info.ChannelSetting.Proxy,
+			}
+		}
 		return newGeminiImageSubmittedHTTPResponse(info.PublicTaskID), nil
 	}
 	return channel.DoTaskApiRequest(a, c, info, requestBody)
@@ -283,14 +298,16 @@ func (a *TaskAdaptor) RunTaskAfterInsert(task *model.Task) {
 }
 
 type geminiImageTaskResponse struct {
-	RequestID   string                 `json:"requestId,omitempty"`
-	ModelCode   string                 `json:"modelCode,omitempty"`
-	Status      string                 `json:"status,omitempty"`
-	Progress    int                    `json:"progress,omitempty"`
-	ResultCount int                    `json:"resultCount,omitempty"`
-	Result      map[string]interface{} `json:"result,omitempty"`
-	URL         string                 `json:"url,omitempty"`
-	Error       *struct {
+	RequestID     string                 `json:"requestId,omitempty"`
+	ModelCode     string                 `json:"modelCode,omitempty"`
+	Status        string                 `json:"status,omitempty"`
+	BillingStatus string                 `json:"billingStatus,omitempty"`
+	Progress      int                    `json:"progress,omitempty"`
+	CreateTime    string                 `json:"createTime,omitempty"`
+	ResultCount   int                    `json:"resultCount,omitempty"`
+	Result        map[string]interface{} `json:"result,omitempty"`
+	URL           string                 `json:"url,omitempty"`
+	Error         *struct {
 		Message string `json:"message,omitempty"`
 		Code    string `json:"code,omitempty"`
 	} `json:"error,omitempty"`
@@ -300,7 +317,7 @@ func newGeminiImageSubmittedHTTPResponse(requestID string) *http.Response {
 	body, _ := common.Marshal(geminiImageTaskResponse{
 		RequestID: requestID,
 		Status:    "submitted",
-		Progress:  0,
+		Progress:  20,
 	})
 	return &http.Response{
 		StatusCode: http.StatusOK,
@@ -318,8 +335,12 @@ func (a *TaskAdaptor) doImageSubmitResponse(c *gin.Context, responseBody []byte,
 		upstream.RequestID = info.PublicTaskID
 	}
 	upstream.ModelCode = info.OriginModelName
+	upstream.BillingStatus = "pending"
 	upstream.Status = "submitted"
-	upstream.Progress = 0
+	upstream.Progress = 20
+	if upstream.CreateTime == "" {
+		upstream.CreateTime = time.Now().Format("2006-01-02 15:04:05")
+	}
 	data, err := common.Marshal(upstream)
 	if err != nil {
 		return "", nil, service.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)

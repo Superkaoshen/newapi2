@@ -294,11 +294,11 @@ func buildAliyunOssObjectKeyWithFallback(prefix, contentType string, fallbackExt
 }
 
 func imageFileExt(contentType string) string {
+	contentType = strings.ToLower(strings.TrimSpace(canonicalContentType(contentType)))
+	if strings.Contains(contentType, "jpeg") || strings.Contains(contentType, "jpg") || strings.Contains(contentType, "jfif") {
+		return ".jpg"
+	}
 	switch contentType {
-	case "image/jpeg":
-		return ".jpg"
-	case "image/jpg":
-		return ".jpg"
 	case "image/png":
 		return ".png"
 	case "image/webp":
@@ -328,9 +328,6 @@ func imageFileExt(contentType string) string {
 	}
 	if !strings.HasPrefix(contentType, "image/") {
 		return ".bin"
-	}
-	if strings.Contains(contentType, "jpeg") || strings.Contains(contentType, "jpg") {
-		return ".jpg"
 	}
 	switch contentType {
 	default:
