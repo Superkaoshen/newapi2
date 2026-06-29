@@ -186,8 +186,7 @@ func SaveBase64ImageToAliyunOSS(data string, contentType string) (string, error)
 		return "", fmt.Errorf("image size exceeds maximum allowed size")
 	}
 
-	detectedContentType := http.DetectContentType(imageBytes)
-	if detectedContentType != "application/octet-stream" && strings.HasPrefix(detectedContentType, "image/") {
+	if detectedContentType := detectImageContentTypeFromBytes(imageBytes); detectedContentType != "" {
 		contentType = detectedContentType
 	}
 
@@ -197,6 +196,44 @@ func SaveBase64ImageToAliyunOSS(data string, contentType string) (string, error)
 	}
 
 	return buildAliyunOssPublicURL(cfg, objectKey)
+}
+
+func detectImageContentTypeFromBytes(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	if _, format, err := decodeImageConfig(data); err == nil {
+		switch strings.ToLower(format) {
+		case "jpeg", "jpg":
+			return "image/jpeg"
+		case "png":
+			return "image/png"
+		case "gif":
+			return "image/gif"
+		case "webp":
+			return "image/webp"
+		case "bmp":
+			return "image/bmp"
+		case "tiff":
+			return "image/tiff"
+		case "heic":
+			return "image/heic"
+		case "heif":
+			return "image/heif"
+		default:
+			if strings.TrimSpace(format) != "" {
+				return "image/" + strings.ToLower(format)
+			}
+		}
+	}
+	if heifMime := detectHEIF(data); heifMime != "" {
+		return heifMime
+	}
+	detectedContentType := http.DetectContentType(data)
+	if detectedContentType != "application/octet-stream" && strings.HasPrefix(detectedContentType, "image/") {
+		return canonicalContentType(detectedContentType)
+	}
+	return ""
 }
 
 func resolveImageURL(rawURL string, upstreamBaseURL string) (string, error) {
