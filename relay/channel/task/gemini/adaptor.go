@@ -404,6 +404,15 @@ func runGeminiImageTask(ctx context.Context, taskID int64, requestBody []byte, i
 	progressDone := make(chan struct{})
 	defer close(progressDone)
 	updateTask := func(taskInfo *relaycommon.TaskInfo, fallback []byte) {
+		if taskInfo != nil && taskInfo.Status == model.TaskStatusFailure {
+			resubmitted, resubmitErr := service.TryResubmitAsyncImageTask(ctx, task, taskInfo.Reason)
+			if resubmitErr != nil {
+				logger.LogWarn(ctx, fmt.Sprintf("resubmit gemini image task %s failed: %s", task.TaskID, resubmitErr.Error()))
+			}
+			if resubmitted {
+				return
+			}
+		}
 		snap := task.Snapshot()
 		applyGeminiImageTaskInfo(task, taskInfo, fallback)
 		if !snap.Equal(task.Snapshot()) {

@@ -49,6 +49,45 @@ func TestAddAbilitiesIncludesModelMappingSources(t *testing.T) {
 	require.ElementsMatch(t, []string{"nanobanana", "public-nano"}, models)
 }
 
+func TestGetEnabledChannelsForGroupModelIncludesMappedModelCandidates(t *testing.T) {
+	clearPreferredOwnerTables(t)
+
+	highPriority := int64(20)
+	lowPriority := int64(10)
+	modelMapping := `{"public-nano":"nanobanana"}`
+	channels := []*Channel{
+		{
+			Id:           9201,
+			Type:         constant.ChannelTypeMihuifang,
+			Key:          "key-1",
+			Status:       common.ChannelStatusEnabled,
+			Models:       "nanobanana",
+			Group:        "default",
+			Priority:     &lowPriority,
+			ModelMapping: &modelMapping,
+		},
+		{
+			Id:       9202,
+			Type:     constant.ChannelTypeGemini,
+			Key:      "key-2",
+			Status:   common.ChannelStatusEnabled,
+			Models:   "public-nano",
+			Group:    "default",
+			Priority: &highPriority,
+		},
+	}
+	for _, channel := range channels {
+		require.NoError(t, DB.Create(channel).Error)
+		require.NoError(t, channel.AddAbilities(nil))
+	}
+
+	got, err := GetEnabledChannelsForGroupModel("default", "public-nano")
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.Equal(t, 9202, got[0].Id)
+	require.Equal(t, 9201, got[1].Id)
+}
+
 func TestEditChannelByTagRebuildsAbilitiesWhenModelMappingChanges(t *testing.T) {
 	clearPreferredOwnerTables(t)
 

@@ -267,6 +267,18 @@ func addUsedChannel(c *gin.Context, channelId int) {
 	c.Set("use_channel", useChannel)
 }
 
+func appendTaskTriedChannel(ids []int, channelId int) []int {
+	if channelId <= 0 {
+		return ids
+	}
+	for _, id := range ids {
+		if id == channelId {
+			return ids
+		}
+	}
+	return append(ids, channelId)
+}
+
 func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 	if request == nil {
 		return &types.TokenCountMeta{}
@@ -596,6 +608,14 @@ func RelayTask(c *gin.Context) {
 			OtherRatios:     relayInfo.PriceData.OtherRatios,
 			OriginModelName: relayInfo.OriginModelName,
 			PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
+		}
+		if req, reqErr := relaycommon.GetTaskRequest(c); reqErr == nil {
+			if data, marshalErr := common.Marshal(req); marshalErr == nil {
+				task.PrivateData.OriginalRequest = string(data)
+			}
+		}
+		if relayInfo.ChannelId > 0 {
+			task.PrivateData.TriedChannelIDs = appendTaskTriedChannel(task.PrivateData.TriedChannelIDs, relayInfo.ChannelId)
 		}
 		task.Quota = result.Quota
 		task.Data = result.TaskData

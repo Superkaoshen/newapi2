@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -141,6 +142,58 @@ func GetChannel(group string, model string, retry int) (*Channel, error) {
 	}
 	err = DB.First(&channel, "id = ?", channel.Id).Error
 	return &channel, err
+}
+
+func GetEnabledChannelsForGroupModel(group string, modelName string) ([]*Channel, error) {
+	modelName = strings.TrimSpace(modelName)
+	group = strings.TrimSpace(group)
+	if group == "" || modelName == "" {
+		return nil, nil
+	}
+
+	models := []string{modelName}
+	normalizedModel := ratio_setting.FormatMatchingModelName(modelName)
+	if normalizedModel != "" && normalizedModel != modelName {
+		models = append(models, normalizedModel)
+	}
+
+	var abilities []Ability
+	err := DB.Model(&Ability{}).
+		Where(commonGroupCol+" = ? and model IN ? and enabled = ?", group, models, true).
+		Order("priority DESC, weight DESC, channel_id ASC").
+		Find(&abilities).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(abilities) == 0 {
+		return nil, nil
+	}
+
+	channelIDs := make([]int, 0, len(abilities))
+	seen := make(map[int]struct{}, len(abilities))
+	for _, ability := range abilities {
+		if _, ok := seen[ability.ChannelId]; ok {
+			continue
+		}
+		seen[ability.ChannelId] = struct{}{}
+		channelIDs = append(channelIDs, ability.ChannelId)
+	}
+
+	var channels []Channel
+	if err = DB.Where("id IN ? and status = ?", channelIDs, common.ChannelStatusEnabled).Find(&channels).Error; err != nil {
+		return nil, err
+	}
+	channelByID := make(map[int]*Channel, len(channels))
+	for i := range channels {
+		channelByID[channels[i].Id] = &channels[i]
+	}
+	result := make([]*Channel, 0, len(channels))
+	for _, channelID := range channelIDs {
+		if channel, ok := channelByID[channelID]; ok {
+			result = append(result, channel)
+		}
+	}
+	return result, nil
 }
 
 func (channel *Channel) AddAbilities(tx *gorm.DB) error {

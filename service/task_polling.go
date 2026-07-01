@@ -35,6 +35,17 @@ type TaskPollingAdaptor interface {
 // 打破 service -> relay -> relay/channel -> service 的循环依赖。
 var GetTaskAdaptorFunc func(platform constant.TaskPlatform) TaskPollingAdaptor
 
+// TryResubmitAsyncImageTaskFunc 由 relay 包注入，用于异步图片任务失败后的跨渠道重投。
+// 返回 true 表示任务已经切换到新的渠道继续执行，调用方不应再将其标记为最终失败。
+var TryResubmitAsyncImageTaskFunc func(ctx context.Context, task *model.Task, reason string) (bool, error)
+
+func TryResubmitAsyncImageTask(ctx context.Context, task *model.Task, reason string) (bool, error) {
+	if TryResubmitAsyncImageTaskFunc == nil {
+		return false, nil
+	}
+	return TryResubmitAsyncImageTaskFunc(ctx, task, reason)
+}
+
 // sweepTimedOutTasks 在主轮询之前独立清理超时任务。
 // 每次最多处理 100 条，剩余的下个周期继续处理。
 // 使用 per-task CAS (UpdateWithStatus) 防止覆盖被正常轮询已推进的任务。
@@ -454,6 +465,16 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	shouldRefund := false
 	shouldSettle := false
 	quota := task.Quota
+
+	if taskResult.Status == model.TaskStatusFailure {
+		resubmitted, resubmitErr := TryResubmitAsyncImageTask(ctx, task, taskResult.Reason)
+		if resubmitErr != nil {
+			logger.LogWarn(ctx, fmt.Sprintf("Task %s async image resubmit failed: %s", task.TaskID, resubmitErr.Error()))
+		}
+		if resubmitted {
+			return nil
+		}
+	}
 
 	task.Status = model.TaskStatus(taskResult.Status)
 	switch taskResult.Status {

@@ -564,6 +564,15 @@ func tryUpdateAsyncImageTask(task *model.Task) error {
 	if err != nil {
 		return err
 	}
+	if taskResult != nil && taskResult.Status == model.TaskStatusFailure {
+		resubmitted, resubmitErr := service.TryResubmitAsyncImageTask(context.Background(), task, taskResult.Reason)
+		if resubmitErr != nil {
+			return resubmitErr
+		}
+		if resubmitted {
+			return nil
+		}
+	}
 
 	snap := task.Snapshot()
 	applyTaskInfoToAsyncImageTask(task, taskResult, body)

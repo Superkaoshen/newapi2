@@ -59,6 +59,11 @@ func storeTaskRequest(c *gin.Context, info *RelayInfo, action string, requestObj
 	info.Action = action
 	c.Set("task_request", requestObj)
 }
+
+func SetTaskRequestForFailover(c *gin.Context, requestObj TaskSubmitReq) {
+	c.Set("task_request", requestObj)
+}
+
 func GetTaskRequest(c *gin.Context) (TaskSubmitReq, error) {
 	v, exists := c.Get("task_request")
 	if !exists {
