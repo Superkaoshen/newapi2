@@ -517,6 +517,13 @@ func RelayTask(c *gin.Context) {
 		return
 	}
 
+	if relay.CanQueueAsyncImageTask(c, relayInfo) {
+		if taskErr := relay.RelayTaskEnqueue(c, relayInfo); taskErr != nil {
+			respondTaskError(c, taskErr)
+		}
+		return
+	}
+
 	var result *relay.TaskSubmitResult
 	var taskErr *dto.TaskError
 	defer func() {

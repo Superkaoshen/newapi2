@@ -127,6 +127,7 @@ func main() {
 		}
 		return a
 	}
+	relay.StartAsyncImageSubmitWorker()
 
 	// Channel upstream model update check task
 	controller.StartChannelUpstreamModelUpdateTask()

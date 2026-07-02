@@ -13,6 +13,7 @@ import (
 )
 
 type TaskStatus string
+type TaskSubmitState string
 
 func (t TaskStatus) ToVideoStatus() string {
 	var status string
@@ -41,6 +42,18 @@ const (
 	TaskStatusUnknown               = "UNKNOWN"
 )
 
+const (
+	TaskSubmitStateNone       TaskSubmitState = ""
+	TaskSubmitStateQueued                     = "queued"
+	TaskSubmitStateSubmitting                 = "submitting"
+	TaskSubmitStateSubmitted                  = "submitted"
+	TaskSubmitStateFailed                     = "failed"
+)
+
+func (s TaskSubmitState) IsPending() bool {
+	return s == TaskSubmitStateQueued || s == TaskSubmitStateSubmitting
+}
+
 type Task struct {
 	ID         int64                 `json:"id" gorm:"primary_key;AUTO_INCREMENT"`
 	CreatedAt  int64                 `json:"created_at" gorm:"index"`
@@ -55,11 +68,17 @@ type Task struct {
 	Status     TaskStatus            `json:"status" gorm:"type:varchar(20);index"` // 任务状态
 	FailReason string                `json:"fail_reason"`
 	SubmitTime int64                 `json:"submit_time" gorm:"index"`
-	StartTime  int64                 `json:"start_time" gorm:"index"`
-	FinishTime int64                 `json:"finish_time" gorm:"index"`
-	Progress   string                `json:"progress" gorm:"type:varchar(20);index"`
-	Properties Properties            `json:"properties" gorm:"type:json"`
-	Username   string                `json:"username,omitempty" gorm:"-"`
+	// SubmitState 仅表示本地队列到上游提交阶段的状态，不替代对外任务状态。
+	SubmitState     TaskSubmitState `json:"submit_state,omitempty" gorm:"type:varchar(20);index"`
+	SubmitAttempts  int             `json:"submit_attempts,omitempty"`
+	SubmitAfter     int64           `json:"submit_after,omitempty" gorm:"index"`
+	SubmitClaimedAt int64           `json:"submit_claimed_at,omitempty" gorm:"index"`
+	SubmitClaimedBy string          `json:"submit_claimed_by,omitempty" gorm:"type:varchar(64);index"`
+	StartTime       int64           `json:"start_time" gorm:"index"`
+	FinishTime      int64           `json:"finish_time" gorm:"index"`
+	Progress        string          `json:"progress" gorm:"type:varchar(20);index"`
+	Properties      Properties      `json:"properties" gorm:"type:json"`
+	Username        string          `json:"username,omitempty" gorm:"-"`
 	// 禁止返回给用户，内部可能包含key等隐私信息
 	PrivateData TaskPrivateData `json:"-" gorm:"column:private_data;type:json"`
 	Data        json.RawMessage `json:"data" gorm:"type:json"`
@@ -192,7 +211,8 @@ func InitTask(platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) 
 	privateData := TaskPrivateData{}
 	if relayInfo != nil && relayInfo.ChannelMeta != nil {
 		if relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeGemini ||
-			relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeVertexAi {
+			relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeVertexAi ||
+			relayInfo.ChannelMeta.ChannelType == constant.ChannelTypeMihuifang {
 			privateData.Key = relayInfo.ChannelMeta.ApiKey
 		}
 		if relayInfo.UpstreamModelName != "" {
@@ -311,6 +331,8 @@ func GetTimedOutUnfinishedTasks(cutoffUnix int64, limit int) []*Task {
 	var tasks []*Task
 	err := DB.Where("progress != ?", "100%").
 		Where("status NOT IN ?", []string{TaskStatusFailure, TaskStatusSuccess}).
+		Where("(submit_state IS NULL OR submit_state = ? OR submit_state NOT IN ?)",
+			TaskSubmitStateNone, []TaskSubmitState{TaskSubmitStateQueued, TaskSubmitStateSubmitting}).
 		Where("submit_time < ?", cutoffUnix).
 		Order("submit_time").
 		Limit(limit).
@@ -325,11 +347,76 @@ func GetAllUnFinishSyncTasks(limit int) []*Task {
 	var tasks []*Task
 	var err error
 	// get all tasks progress is not 100%
-	err = DB.Where("progress != ?", "100%").Where("status != ?", TaskStatusFailure).Where("status != ?", TaskStatusSuccess).Limit(limit).Order("id").Find(&tasks).Error
+	err = DB.Where("progress != ?", "100%").
+		Where("status != ?", TaskStatusFailure).
+		Where("status != ?", TaskStatusSuccess).
+		Where("(submit_state IS NULL OR submit_state = ? OR submit_state NOT IN ?)",
+			TaskSubmitStateNone, []TaskSubmitState{TaskSubmitStateQueued, TaskSubmitStateSubmitting}).
+		Limit(limit).Order("id").Find(&tasks).Error
 	if err != nil {
 		return nil
 	}
 	return tasks
+}
+
+func GetQueuedAsyncImageTasks(limit int, now int64) []*Task {
+	var tasks []*Task
+	err := DB.Where("submit_state = ? AND submit_after <= ?", TaskSubmitStateQueued, now).
+		Where("status NOT IN ?", []TaskStatus{TaskStatusFailure, TaskStatusSuccess}).
+		Order("submit_after, id").
+		Limit(limit).
+		Find(&tasks).Error
+	if err != nil {
+		return nil
+	}
+	return tasks
+}
+
+func GetExpiredSubmittingAsyncImageTasks(cutoff int64, limit int) []*Task {
+	var tasks []*Task
+	err := DB.Where("submit_state = ? AND submit_claimed_at < ?", TaskSubmitStateSubmitting, cutoff).
+		Where("status NOT IN ?", []TaskStatus{TaskStatusFailure, TaskStatusSuccess}).
+		Order("submit_claimed_at, id").
+		Limit(limit).
+		Find(&tasks).Error
+	if err != nil {
+		return nil
+	}
+	return tasks
+}
+
+func ResetExpiredSubmittingAsyncImageTasks(cutoff int64, limit int) error {
+	tasks := GetExpiredSubmittingAsyncImageTasks(cutoff, limit)
+	if len(tasks) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(tasks))
+	for _, task := range tasks {
+		ids = append(ids, task.ID)
+	}
+	return DB.Model(&Task{}).
+		Where("id IN ? AND submit_state = ? AND submit_claimed_at < ?", ids, TaskSubmitStateSubmitting, cutoff).
+		Updates(map[string]any{
+			"submit_state":      TaskSubmitStateQueued,
+			"submit_claimed_at": 0,
+			"submit_claimed_by": "",
+		}).Error
+}
+
+func ClaimTaskForSubmit(id int64, workerID string, now int64) (bool, error) {
+	result := DB.Model(&Task{}).
+		Where("id = ? AND submit_state = ? AND submit_after <= ?", id, TaskSubmitStateQueued, now).
+		Where("status NOT IN ?", []TaskStatus{TaskStatusFailure, TaskStatusSuccess}).
+		Updates(map[string]any{
+			"submit_state":      TaskSubmitStateSubmitting,
+			"submit_claimed_at": now,
+			"submit_claimed_by": workerID,
+			"updated_at":        now,
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
 }
 
 func GetByOnlyTaskId(taskId string) (*Task, bool, error) {

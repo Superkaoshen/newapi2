@@ -234,3 +234,73 @@ func TestUpdateWithStatus_ConcurrentWinner(t *testing.T) {
 	}
 	assert.Equal(t, 1, winCount, "exactly one goroutine should win the CAS")
 }
+
+func TestClaimTaskForSubmit_OnlyQueuedAndDue(t *testing.T) {
+	truncateTables(t)
+
+	now := time.Now().Unix()
+	task := &Task{
+		TaskID:      "task_submit_claim",
+		Status:      TaskStatusQueued,
+		SubmitState: TaskSubmitStateQueued,
+		SubmitAfter: now,
+		Progress:    "0%",
+		Data:        json.RawMessage(`{}`),
+	}
+	insertTask(t, task)
+
+	won, err := ClaimTaskForSubmit(task.ID, "worker-a", now)
+	require.NoError(t, err)
+	assert.True(t, won)
+
+	var reloaded Task
+	require.NoError(t, DB.First(&reloaded, task.ID).Error)
+	assert.EqualValues(t, TaskSubmitStateSubmitting, reloaded.SubmitState)
+	assert.Equal(t, "worker-a", reloaded.SubmitClaimedBy)
+	assert.Equal(t, now, reloaded.SubmitClaimedAt)
+
+	won, err = ClaimTaskForSubmit(task.ID, "worker-b", now)
+	require.NoError(t, err)
+	assert.False(t, won)
+}
+
+func TestResetExpiredSubmittingAsyncImageTasks(t *testing.T) {
+	truncateTables(t)
+
+	now := time.Now().Unix()
+	expired := &Task{
+		TaskID:          "task_submit_expired",
+		Status:          TaskStatusQueued,
+		SubmitState:     TaskSubmitStateSubmitting,
+		SubmitAfter:     now - 10,
+		SubmitClaimedAt: now - 120,
+		SubmitClaimedBy: "worker-a",
+		Progress:        "0%",
+		Data:            json.RawMessage(`{}`),
+	}
+	active := &Task{
+		TaskID:          "task_submit_active",
+		Status:          TaskStatusQueued,
+		SubmitState:     TaskSubmitStateSubmitting,
+		SubmitAfter:     now - 10,
+		SubmitClaimedAt: now,
+		SubmitClaimedBy: "worker-a",
+		Progress:        "0%",
+		Data:            json.RawMessage(`{}`),
+	}
+	insertTask(t, expired)
+	insertTask(t, active)
+
+	require.NoError(t, ResetExpiredSubmittingAsyncImageTasks(now-60, 100))
+
+	var reloadedExpired Task
+	require.NoError(t, DB.First(&reloadedExpired, expired.ID).Error)
+	assert.EqualValues(t, TaskSubmitStateQueued, reloadedExpired.SubmitState)
+	assert.Empty(t, reloadedExpired.SubmitClaimedBy)
+	assert.Zero(t, reloadedExpired.SubmitClaimedAt)
+
+	var reloadedActive Task
+	require.NoError(t, DB.First(&reloadedActive, active.ID).Error)
+	assert.EqualValues(t, TaskSubmitStateSubmitting, reloadedActive.SubmitState)
+	assert.Equal(t, "worker-a", reloadedActive.SubmitClaimedBy)
+}

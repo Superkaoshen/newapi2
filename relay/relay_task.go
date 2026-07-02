@@ -37,6 +37,11 @@ type TaskSubmitResult struct {
 	//PerCallPrice   types.PriceData
 }
 
+type preparedTaskSubmission struct {
+	platform constant.TaskPlatform
+	adaptor  channel.TaskAdaptor
+}
+
 type taskInitialInfoProvider interface {
 	InitialTaskInfo() *relaycommon.TaskInfo
 }
@@ -164,6 +169,72 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 // 构建/发送/解析上游请求 → 提交后计费调整(AdjustBillingOnSubmit)。
 // 控制器负责 defer Refund 和成功后 Settle。
 func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitResult, *dto.TaskError) {
+	prepared, taskErr := prepareTaskSubmission(c, info)
+	if taskErr != nil {
+		return nil, taskErr
+	}
+	adaptor := prepared.adaptor
+	platform := prepared.platform
+
+	// 8. 构建请求体
+	requestBody, err := adaptor.BuildRequestBody(c, info)
+	if err != nil {
+		return nil, service.TaskErrorWrapper(err, "build_request_failed", http.StatusInternalServerError)
+	}
+
+	// 9. 发送请求
+	resp, err := adaptor.DoRequest(c, info, requestBody)
+	if err != nil {
+		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
+	}
+	if resp != nil && !isHTTPSuccessStatus(resp.StatusCode) {
+		responseBody, _ := io.ReadAll(resp.Body)
+		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
+	}
+
+	// 10. 返回 OtherRatios 给下游（header 必须在 DoResponse 写 body 之前设置）
+	otherRatios := info.PriceData.OtherRatios
+	if otherRatios == nil {
+		otherRatios = map[string]float64{}
+	}
+	ratiosJSON, _ := common.Marshal(otherRatios)
+	c.Header("X-New-Api-Other-Ratios", string(ratiosJSON))
+
+	// 11. 解析响应
+	upstreamTaskID, taskData, taskErr := adaptor.DoResponse(c, resp, info)
+	if taskErr != nil {
+		return nil, taskErr
+	}
+	var initialTaskInfo *relaycommon.TaskInfo
+	if provider, ok := adaptor.(taskInitialInfoProvider); ok {
+		initialTaskInfo = provider.InitialTaskInfo()
+	}
+	var postInsertRunner taskPostInsertRunner
+	if runner, ok := adaptor.(taskPostInsertRunner); ok {
+		postInsertRunner = runner
+	}
+
+	// 11. 提交后计费调整：让适配器根据上游实际返回调整 OtherRatios
+	finalQuota := info.PriceData.Quota
+	if adjustedRatios := adaptor.AdjustBillingOnSubmit(info, taskData); len(adjustedRatios) > 0 {
+		// 基于调整后的 ratios 重新计算 quota
+		finalQuota = recalcQuotaFromRatios(info, adjustedRatios)
+		info.PriceData.OtherRatios = adjustedRatios
+		info.PriceData.Quota = finalQuota
+	}
+
+	return &TaskSubmitResult{
+		UpstreamTaskID:   upstreamTaskID,
+		TaskData:         taskData,
+		Platform:         platform,
+		Quota:            finalQuota,
+		ImageProtocol:    relayImageProtocol(info),
+		InitialTaskInfo:  initialTaskInfo,
+		postInsertRunner: postInsertRunner,
+	}, nil
+}
+
+func prepareTaskSubmission(c *gin.Context, info *relaycommon.RelayInfo) (*preparedTaskSubmission, *dto.TaskError) {
 	info.InitChannelMeta(c)
 
 	// 1. 确定 platform → 创建适配器 → 验证请求
@@ -248,62 +319,120 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		}
 	}
 
-	// 8. 构建请求体
-	requestBody, err := adaptor.BuildRequestBody(c, info)
-	if err != nil {
-		return nil, service.TaskErrorWrapper(err, "build_request_failed", http.StatusInternalServerError)
+	return &preparedTaskSubmission{platform: platform, adaptor: adaptor}, nil
+}
+
+func CanQueueAsyncImageTask(c *gin.Context, info *relaycommon.RelayInfo) bool {
+	if c == nil || info == nil || c.Request == nil || c.Request.Method != http.MethodPost {
+		return false
+	}
+	contentType := strings.ToLower(c.GetHeader("Content-Type"))
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		return false
+	}
+	switch info.RelayMode {
+	case relayconstant.RelayModeAsyncImageSubmit,
+		relayconstant.RelayModeImagesGenerations,
+		relayconstant.RelayModeImagesEdits:
+	default:
+		return false
 	}
 
-	// 9. 发送请求
-	resp, err := adaptor.DoRequest(c, info, requestBody)
-	if err != nil {
-		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
+	channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)
+	if channelType == constant.ChannelTypeMihuifang {
+		return true
 	}
-	if resp != nil && !isHTTPSuccessStatus(resp.StatusCode) {
-		responseBody, _ := io.ReadAll(resp.Body)
-		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
+	if channelType == constant.ChannelTypeGemini {
+		if info.RelayMode == relayconstant.RelayModeAsyncImageSubmit {
+			return true
+		}
+		modelName := strings.TrimSpace(info.OriginModelName)
+		if modelName == "" {
+			modelName = common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
+		}
+		return taskgemini.IsImageTaskModel(modelName)
+	}
+	return false
+}
+
+func RelayTaskEnqueue(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.TaskError) {
+	defer func() {
+		if taskErr != nil && info != nil && info.Billing != nil {
+			info.Billing.Refund(c)
+		}
+	}()
+
+	prepared, taskErr := prepareTaskSubmission(c, info)
+	if taskErr != nil {
+		return taskErr
 	}
 
-	// 10. 返回 OtherRatios 给下游（header 必须在 DoResponse 写 body 之前设置）
+	req, err := relaycommon.GetTaskRequest(c)
+	if err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	originalRequest, err := common.Marshal(req)
+	if err != nil {
+		return service.TaskErrorWrapper(err, "marshal_request_failed", http.StatusInternalServerError)
+	}
+
+	now := time.Now().Unix()
+	task := model.InitTask(prepared.platform, info)
+	task.Status = model.TaskStatusQueued
+	task.Progress = "0%"
+	task.Action = info.Action
+	task.Quota = info.PriceData.Quota
+	task.SubmitState = model.TaskSubmitStateQueued
+	task.SubmitAfter = now
+	task.SubmitClaimedAt = 0
+	task.SubmitClaimedBy = ""
+	task.PrivateData.Key = ""
+	task.PrivateData.OriginalRequest = string(originalRequest)
+	task.PrivateData.BillingSource = info.BillingSource
+	task.PrivateData.SubscriptionId = info.SubscriptionId
+	task.PrivateData.TokenId = info.TokenId
+	task.PrivateData.BillingContext = taskBillingContext(info)
+	task.ChannelId = 0
+
+	if insertErr := task.Insert(); insertErr != nil {
+		return service.TaskErrorWrapper(insertErr, "insert_task_failed", http.StatusInternalServerError)
+	}
+
+	if settleErr := service.SettleBilling(c, info, task.Quota); settleErr != nil {
+		common.SysError("settle queued task billing error: " + settleErr.Error())
+	}
+	originalChannelID := info.ChannelId
+	info.ChannelId = 0
+	service.LogTaskConsumption(c, info)
+	info.ChannelId = originalChannelID
+
 	otherRatios := info.PriceData.OtherRatios
 	if otherRatios == nil {
 		otherRatios = map[string]float64{}
 	}
 	ratiosJSON, _ := common.Marshal(otherRatios)
 	c.Header("X-New-Api-Other-Ratios", string(ratiosJSON))
+	c.Writer.Header().Set("Content-Type", "application/json")
+	if taskgemini.IsImageTaskModel(task.Properties.UpstreamModelName) {
+		_, err = io.Copy(c.Writer, bytes.NewBuffer(taskgemini.ConvertStoredImageTask(task)))
+	} else {
+		_, err = io.Copy(c.Writer, bytes.NewBuffer(taskmihuifang.ConvertStoredTask(task)))
+	}
+	if err != nil {
+		common.SysError("copy queued task response body failed: " + err.Error())
+	}
+	return nil
+}
 
-	// 11. 解析响应
-	upstreamTaskID, taskData, taskErr := adaptor.DoResponse(c, resp, info)
-	if taskErr != nil {
-		return nil, taskErr
+func taskBillingContext(info *relaycommon.RelayInfo) *model.TaskBillingContext {
+	return &model.TaskBillingContext{
+		ModelPrice:      info.PriceData.ModelPrice,
+		GroupRatio:      info.PriceData.GroupRatioInfo.GroupRatio,
+		ModelRatio:      info.PriceData.ModelRatio,
+		OtherRatios:     info.PriceData.OtherRatios,
+		OriginModelName: info.OriginModelName,
+		PerCallBilling:  common.StringsContains(constant.TaskPricePatches, info.OriginModelName) || info.PriceData.UsePrice,
 	}
-	var initialTaskInfo *relaycommon.TaskInfo
-	if provider, ok := adaptor.(taskInitialInfoProvider); ok {
-		initialTaskInfo = provider.InitialTaskInfo()
-	}
-	var postInsertRunner taskPostInsertRunner
-	if runner, ok := adaptor.(taskPostInsertRunner); ok {
-		postInsertRunner = runner
-	}
-
-	// 11. 提交后计费调整：让适配器根据上游实际返回调整 OtherRatios
-	finalQuota := info.PriceData.Quota
-	if adjustedRatios := adaptor.AdjustBillingOnSubmit(info, taskData); len(adjustedRatios) > 0 {
-		// 基于调整后的 ratios 重新计算 quota
-		finalQuota = recalcQuotaFromRatios(info, adjustedRatios)
-		info.PriceData.OtherRatios = adjustedRatios
-		info.PriceData.Quota = finalQuota
-	}
-
-	return &TaskSubmitResult{
-		UpstreamTaskID:   upstreamTaskID,
-		TaskData:         taskData,
-		Platform:         platform,
-		Quota:            finalQuota,
-		ImageProtocol:    relayImageProtocol(info),
-		InitialTaskInfo:  initialTaskInfo,
-		postInsertRunner: postInsertRunner,
-	}, nil
 }
 
 func relayImageProtocol(info *relaycommon.RelayInfo) string {
@@ -486,6 +615,15 @@ func asyncImageFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskRe
 		return
 	}
 
+	if originTask.SubmitState.IsPending() {
+		if taskgemini.IsImageTaskModel(originTask.Properties.UpstreamModelName) {
+			respBody = taskgemini.ConvertStoredImageTask(originTask)
+		} else {
+			respBody = taskmihuifang.ConvertStoredTask(originTask)
+		}
+		return
+	}
+
 	if taskgemini.IsImageTaskModel(originTask.Properties.UpstreamModelName) {
 		if !taskmihuifang.IsCompletedTask(originTask) {
 			_ = tryResumeGeminiImageTask(originTask)
@@ -501,6 +639,9 @@ func asyncImageFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskRe
 }
 
 func tryResumeGeminiImageTask(task *model.Task) error {
+	if task.SubmitState.IsPending() {
+		return nil
+	}
 	channelModel, err := model.GetChannelById(task.ChannelId, true)
 	if err != nil {
 		return err
@@ -521,6 +662,9 @@ func tryResumeGeminiImageTask(task *model.Task) error {
 }
 
 func tryUpdateAsyncImageTask(task *model.Task) error {
+	if task.SubmitState.IsPending() {
+		return nil
+	}
 	channelModel, err := model.GetChannelById(task.ChannelId, true)
 	if err != nil {
 		return err
