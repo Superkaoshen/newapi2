@@ -121,14 +121,7 @@ func TaskPollingLoop() {
 			taskM := make(map[string]*model.Task)
 			nullTaskIds := make([]int64, 0)
 			for _, task := range tasks {
-				upstreamID := task.GetUpstreamTaskID()
-				if upstreamID == "" {
-					// 统计失败的未完成任务
-					nullTaskIds = append(nullTaskIds, task.ID)
-					continue
-				}
-				taskM[upstreamID] = task
-				taskChannelM[task.ChannelId] = append(taskChannelM[task.ChannelId], upstreamID)
+				collectTaskForPolling(ctx, task, taskChannelM, taskM, &nullTaskIds)
 			}
 			if len(nullTaskIds) > 0 {
 				err := model.TaskBulkUpdateByID(nullTaskIds, map[string]any{
@@ -149,6 +142,24 @@ func TaskPollingLoop() {
 		}
 		common.SysLog("任务进度轮询完成")
 	}
+}
+
+func collectTaskForPolling(ctx context.Context, task *model.Task, taskChannelM map[int][]string, taskM map[string]*model.Task, nullTaskIds *[]int64) {
+	if task == nil {
+		return
+	}
+	upstreamID := task.GetUpstreamTaskID()
+	if upstreamID == "" {
+		// 统计失败的未完成任务
+		*nullTaskIds = append(*nullTaskIds, task.ID)
+		return
+	}
+	if task.ChannelId <= 0 {
+		logger.LogWarn(ctx, fmt.Sprintf("skip unfinished task %s polling because channel ID is %d", task.TaskID, task.ChannelId))
+		return
+	}
+	taskM[upstreamID] = task
+	taskChannelM[task.ChannelId] = append(taskChannelM[task.ChannelId], upstreamID)
 }
 
 func isLocalGeminiImageTask(task *model.Task) bool {
