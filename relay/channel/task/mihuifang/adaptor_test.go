@@ -101,6 +101,34 @@ func TestBuildRequestBodyAllowsMappedModel(t *testing.T) {
 	}
 }
 
+func TestBuildRequestBodyPassesThroughUnknownMappedModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:  "public-nano",
+		Prompt: "draw a cat",
+	})
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "nanobanana-7"},
+	}
+
+	body, err := (&TaskAdaptor{}).BuildRequestBody(c, info)
+	if err != nil {
+		t.Fatalf("BuildRequestBody error = %v", err)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read body error = %v", err)
+	}
+	var payload map[string]interface{}
+	if err := common.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal body error = %v", err)
+	}
+	if got := payload["model"]; got != "nanobanana-7" {
+		t.Fatalf("model = %v, want nanobanana-7; body=%s", got, data)
+	}
+}
+
 func TestBuildRequestBodyAllowsProVariantModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

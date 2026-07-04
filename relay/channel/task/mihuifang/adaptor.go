@@ -175,9 +175,6 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	if mihuifangImageProtocol(info) == imageTaskProtocolImageOne {
 		return buildImageOneRequestBody(c, upstreamModel, req)
 	}
-	if !isSupportedModel(upstreamModel) {
-		return nil, fmt.Errorf("unsupported model: %s", info.UpstreamModelName)
-	}
 	if isMultipartEditRequest(c, info) {
 		return buildMultipartRequestBody(c, upstreamModel)
 	}
@@ -536,15 +533,6 @@ func isSuccessStatus(status string) bool {
 	default:
 		return false
 	}
-}
-
-func isSupportedModel(modelName string) bool {
-	for _, m := range ModelList {
-		if modelName == m {
-			return true
-		}
-	}
-	return false
 }
 
 func normalizeMihuifangModel(modelName string) string {
