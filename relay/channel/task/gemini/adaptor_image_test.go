@@ -95,7 +95,7 @@ func TestGeminiAsyncImageMappedModelUsesGenerateContent(t *testing.T) {
 	}
 }
 
-func TestGeminiImagePixelSizeMapsTierAndAspect(t *testing.T) {
+func TestGeminiImagePixelSizeMapsAspectWithoutImplicitTier(t *testing.T) {
 	req := relaycommon.TaskSubmitReq{
 		Prompt: "draw",
 		Size:   "5504x3072",
@@ -117,8 +117,63 @@ func TestGeminiImagePixelSizeMapsTierAndAspect(t *testing.T) {
 	if got := imageConfig["aspectRatio"]; got != "16:9" {
 		t.Fatalf("aspectRatio = %v, want 16:9", got)
 	}
+	if _, ok := imageConfig["imageSize"]; ok {
+		t.Fatalf("imageSize should be omitted when resolution is not explicit: %v", imageConfig["imageSize"])
+	}
+}
+
+func TestGeminiImageResolutionMapsTier(t *testing.T) {
+	req := relaycommon.TaskSubmitReq{
+		Prompt:     "draw",
+		Size:       "16x9",
+		Resolution: "5504x3072",
+	}
+	body, err := buildGeminiImageRequestBody(req)
+	if err != nil {
+		t.Fatalf("buildGeminiImageRequestBody error = %v", err)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read body error = %v", err)
+	}
+	var payload map[string]interface{}
+	if err := common.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal body error = %v", err)
+	}
+	config := payload["generationConfig"].(map[string]interface{})
+	imageConfig := config["imageConfig"].(map[string]interface{})
+	if got := imageConfig["aspectRatio"]; got != "16:9" {
+		t.Fatalf("aspectRatio = %v, want 16:9", got)
+	}
 	if got := imageConfig["imageSize"]; got != "4K" {
 		t.Fatalf("imageSize = %v, want 4K", got)
+	}
+}
+
+func TestGeminiImageOneByOneSizeOmitsImplicitTier(t *testing.T) {
+	req := relaycommon.TaskSubmitReq{
+		Prompt: "draw",
+		Size:   "1x1",
+	}
+	body, err := buildGeminiImageRequestBody(req)
+	if err != nil {
+		t.Fatalf("buildGeminiImageRequestBody error = %v", err)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read body error = %v", err)
+	}
+	var payload map[string]interface{}
+	if err := common.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal body error = %v", err)
+	}
+	config := payload["generationConfig"].(map[string]interface{})
+	imageConfig := config["imageConfig"].(map[string]interface{})
+	if got := imageConfig["aspectRatio"]; got != "1:1" {
+		t.Fatalf("aspectRatio = %v, want 1:1", got)
+	}
+	if _, ok := imageConfig["imageSize"]; ok {
+		t.Fatalf("imageSize should be omitted when resolution is not explicit: %v", imageConfig["imageSize"])
 	}
 }
 
@@ -310,12 +365,17 @@ func TestParseGeminiImageCompletionSavesFileDataURLToOSS(t *testing.T) {
 	responseBody := []byte(`{
 		"candidates": [{
 			"content": {
-				"parts": [{
-					"fileData": {
-						"mimeType": "image/png",
-						"fileUri": "` + sourceURL + `"
+				"parts": [
+					{
+						"text": "![generated](` + sourceURL + `)"
+					},
+					{
+						"fileData": {
+							"mimeType": "image/png",
+							"fileUri": "` + sourceURL + `"
+						}
 					}
-				}]
+				]
 			}
 		}]
 	}`)
@@ -333,6 +393,9 @@ func TestParseGeminiImageCompletionSavesFileDataURLToOSS(t *testing.T) {
 	body := string(taskData)
 	if strings.Contains(body, sourceURL) {
 		t.Fatalf("taskData leaked upstream URL: %s", body)
+	}
+	if strings.Contains(body, "image_urls") {
+		t.Fatalf("duplicate markdown/fileData URL should only produce one result: %s", body)
 	}
 	if !strings.Contains(body, "https://cdn.example.com/async-images/") {
 		t.Fatalf("taskData does not contain CDN URL: %s", body)

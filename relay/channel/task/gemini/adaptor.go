@@ -707,7 +707,7 @@ func geminiImageConfig(req relaycommon.TaskSubmitReq) ([]byte, error) {
 	if aspect := geminiImageAspect(req.Size, req.AspectRatio); aspect != "" {
 		config["aspectRatio"] = aspect
 	}
-	if size := strings.ToUpper(geminiImageTier(req.Size, req.Resolution)); size != "" {
+	if size := strings.ToUpper(geminiImageExplicitTier(req.Size, req.Resolution)); size != "" {
 		config["imageSize"] = size
 	}
 	if len(config) == 0 {
@@ -745,21 +745,35 @@ var geminiMarkdownImageURLRe = regexp.MustCompile(`!\[[^\]]*\]\((https?://[^)\s]
 
 func collectGeminiImageOutputs(resp dto.GeminiChatResponse) ([]string, error) {
 	saved := make([]string, 0)
+	savedRemoteURLs := make(map[string]string)
+	saveRemoteURL := func(rawURL string) error {
+		rawURL = strings.TrimSpace(rawURL)
+		if rawURL == "" {
+			return nil
+		}
+		if ossURL, ok := savedRemoteURLs[rawURL]; ok {
+			saved = appendUniqueGeminiImageOutput(saved, ossURL)
+			return nil
+		}
+		ossURL, err := saveGeminiImageURL(rawURL)
+		if err != nil {
+			return err
+		}
+		savedRemoteURLs[rawURL] = ossURL
+		saved = appendUniqueGeminiImageOutput(saved, ossURL)
+		return nil
+	}
 	for _, candidate := range resp.Candidates {
 		for _, part := range candidate.Content.Parts {
 			if part.FileData != nil && isGeminiImageFileData(part.FileData) {
-				ossURL, err := saveGeminiImageURL(part.FileData.FileUri)
-				if err != nil {
+				if err := saveRemoteURL(part.FileData.FileUri); err != nil {
 					return nil, err
 				}
-				saved = appendUniqueGeminiImageOutput(saved, ossURL)
 			}
 			for _, url := range geminiMarkdownImageURLs(part.Text) {
-				ossURL, err := saveGeminiImageURL(url)
-				if err != nil {
+				if err := saveRemoteURL(url); err != nil {
 					return nil, err
 				}
-				saved = appendUniqueGeminiImageOutput(saved, ossURL)
 			}
 			if part.InlineData == nil || !strings.HasPrefix(strings.ToLower(part.InlineData.MimeType), "image/") {
 				continue
@@ -924,6 +938,25 @@ func geminiImageTier(size, resolution string) string {
 		return tier
 	}
 	return "1k"
+}
+
+func geminiImageExplicitTier(size, resolution string) string {
+	text := strings.ToLower(strings.TrimSpace(resolution))
+	if text == "" {
+		text = strings.ToLower(strings.TrimSpace(size))
+		if !strings.Contains(text, "1k") && !strings.Contains(text, "2k") && !strings.Contains(text, "4k") {
+			return ""
+		}
+	}
+	switch {
+	case strings.Contains(text, "4k"):
+		return "4k"
+	case strings.Contains(text, "2k"):
+		return "2k"
+	case strings.Contains(text, "1k"):
+		return "1k"
+	}
+	return geminiImagePixelTier(text)
 }
 
 func geminiImagePixelTier(text string) string {
