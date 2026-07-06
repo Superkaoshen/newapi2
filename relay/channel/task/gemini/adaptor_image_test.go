@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
@@ -76,6 +77,20 @@ func TestGeminiImageBuildRequestURLUsesGenerateContent(t *testing.T) {
 	}
 	if !strings.HasSuffix(url, "/v1beta/models/gemini-3-pro-image-preview:generateContent") {
 		t.Fatalf("url = %s, want generateContent endpoint", url)
+	}
+}
+
+func TestGeminiAsyncImageMappedModelUsesGenerateContent(t *testing.T) {
+	adaptor := &TaskAdaptor{baseURL: "https://api.nanobananai.com"}
+	url, err := adaptor.BuildRequestURL(&relaycommon.RelayInfo{
+		RelayMode:   relayconstant.RelayModeAsyncImageSubmit,
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "nano-banana-pro"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRequestURL error = %v", err)
+	}
+	if !strings.HasSuffix(url, "/v1beta/models/nano-banana-pro:generateContent") {
+		t.Fatalf("url = %s, want mapped model generateContent endpoint", url)
 	}
 }
 

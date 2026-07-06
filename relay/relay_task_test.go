@@ -71,6 +71,48 @@ func TestAsyncImageSubmitSchedulerFallsBackWhenPriorityCircuitOpen(t *testing.T)
 	}
 }
 
+func TestFilterAsyncImageSubmitChannelsKeepsGeminiNanoBananaAlias(t *testing.T) {
+	mapping := `{"gemini-3-pro-image":"nano-banana-pro"}`
+	gemini := testAsyncImageChannel(2, constant.ChannelTypeGemini, 0, 1)
+	gemini.ModelMapping = &mapping
+
+	channels := filterAsyncImageSubmitChannels([]*model.Channel{gemini}, "gemini-3-pro-image")
+	if len(channels) != 1 || channels[0].Id != gemini.Id {
+		t.Fatalf("channels = %#v, want gemini channel %d", channelIDs(channels), gemini.Id)
+	}
+}
+
+func TestFilterAsyncImageSubmitChannelsDoesNotInferProviderFromMappedModelName(t *testing.T) {
+	mapping := `{"gemini-3-pro-image":"nanobanana-7"}`
+	mihuifang := testAsyncImageChannel(1, constant.ChannelTypeMihuifang, 0, 1)
+	mihuifang.ModelMapping = &mapping
+	gemini := testAsyncImageChannel(2, constant.ChannelTypeGemini, 0, 1)
+	gemini.ModelMapping = &mapping
+
+	channels := filterAsyncImageSubmitChannels([]*model.Channel{mihuifang, gemini}, "gemini-3-pro-image")
+	if len(channels) != 2 {
+		t.Fatalf("channels = %#v, want both configured async image channels", channelIDs(channels))
+	}
+}
+
+func TestFilterAsyncImageSubmitChannelsKeepsGeminiImageModels(t *testing.T) {
+	geminiMapping := `{"public-image":"gemini-3-pro-image-preview"}`
+	gemini := testAsyncImageChannel(1, constant.ChannelTypeGemini, 0, 1)
+	gemini.ModelMapping = &geminiMapping
+	imagenMapping := `{"public-imagen":"imagen-4.0-generate-001"}`
+	imagen := testAsyncImageChannel(2, constant.ChannelTypeGemini, 0, 1)
+	imagen.ModelMapping = &imagenMapping
+
+	geminiChannels := filterAsyncImageSubmitChannels([]*model.Channel{gemini}, "public-image")
+	if len(geminiChannels) != 1 || geminiChannels[0].Id != gemini.Id {
+		t.Fatalf("gemini channels = %#v, want channel %d", channelIDs(geminiChannels), gemini.Id)
+	}
+	imagenChannels := filterAsyncImageSubmitChannels([]*model.Channel{imagen}, "public-imagen")
+	if len(imagenChannels) != 1 || imagenChannels[0].Id != imagen.Id {
+		t.Fatalf("imagen channels = %#v, want channel %d", channelIDs(imagenChannels), imagen.Id)
+	}
+}
+
 type errTestAsyncImageSubmitCircuit struct{}
 
 func (errTestAsyncImageSubmitCircuit) Error() string {
@@ -92,4 +134,15 @@ func countScheduledChannels(schedule []*model.Channel) map[int]int {
 		counts[ch.Id]++
 	}
 	return counts
+}
+
+func channelIDs(channels []*model.Channel) []int {
+	ids := make([]int, 0, len(channels))
+	for _, ch := range channels {
+		if ch == nil {
+			continue
+		}
+		ids = append(ids, ch.Id)
+	}
+	return ids
 }

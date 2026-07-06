@@ -20,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel"
 	taskcommon "github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -65,7 +66,7 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	modelName := info.UpstreamModelName
 	version := model_setting.GetGeminiVersionSetting(modelName)
-	if isGeminiImageTaskModel(modelName) {
+	if isGeminiImageTaskRequest(info) {
 		return fmt.Sprintf(
 			"%s/%s/models/%s:generateContent",
 			a.baseURL,
@@ -100,7 +101,7 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	if !ok {
 		return nil, fmt.Errorf("unexpected task_request type")
 	}
-	if isGeminiImageTaskModel(info.UpstreamModelName) {
+	if isGeminiImageTaskRequest(info) {
 		body, err := buildGeminiImageRequestBody(req)
 		if err != nil {
 			return nil, err
@@ -161,7 +162,7 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 
 // DoRequest delegates to common helper.
 func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Response, error) {
-	if a.hasAsyncImageTask() || isGeminiImageTaskModel(info.UpstreamModelName) {
+	if a.hasAsyncImageTask() || isGeminiImageTaskRequest(info) {
 		if !a.hasAsyncImageTask() {
 			data, err := io.ReadAll(requestBody)
 			if err != nil {
@@ -189,7 +190,7 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 		return "", nil, service.TaskErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
 	_ = resp.Body.Close()
-	if a.hasAsyncImageTask() || isGeminiImageTaskModel(info.UpstreamModelName) {
+	if a.hasAsyncImageTask() || isGeminiImageTaskRequest(info) {
 		return a.doImageSubmitResponse(c, responseBody, info)
 	}
 
@@ -234,7 +235,7 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 	if !ok {
 		return nil
 	}
-	if isGeminiImageTaskModel(info.UpstreamModelName) {
+	if isGeminiImageTaskRequest(info) {
 		return map[string]float64{
 			"price_tier": geminiImageTierPriceRatio(info.OriginModelName, info.UpstreamModelName, req),
 			"n":          geminiImageCountRatio(req.N),
@@ -252,7 +253,7 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 }
 
 func (a *TaskAdaptor) ValidateBilling(c *gin.Context, info *relaycommon.RelayInfo) error {
-	if !isGeminiImageTaskModel(info.UpstreamModelName) {
+	if !isGeminiImageTaskRequest(info) {
 		return nil
 	}
 	req, err := relaycommon.GetTaskRequest(c)
@@ -270,7 +271,7 @@ func (a *TaskAdaptor) ValidateBilling(c *gin.Context, info *relaycommon.RelayInf
 }
 
 func (a *TaskAdaptor) ResolveBillingModelName(info *relaycommon.RelayInfo) string {
-	if info == nil || !isGeminiImageTaskModel(info.UpstreamModelName) {
+	if info == nil || !isGeminiImageTaskRequest(info) {
 		return ""
 	}
 	for _, name := range geminiImageModelPriceCandidates(info.OriginModelName, info.UpstreamModelName) {
@@ -367,8 +368,16 @@ func IsImageTaskModel(modelName string) bool {
 	return isGeminiImageTaskModel(modelName)
 }
 
+func isGeminiImageTaskRequest(info *relaycommon.RelayInfo) bool {
+	if info == nil {
+		return false
+	}
+	return info.RelayMode == relayconstant.RelayModeAsyncImageSubmit ||
+		isGeminiImageTaskModel(info.UpstreamModelName)
+}
+
 func TryResumeImageTask(task *model.Task, baseURL, apiKey, proxy string) bool {
-	if task == nil || !isGeminiImageTaskModel(task.Properties.UpstreamModelName) {
+	if task == nil {
 		return false
 	}
 	if task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure {
@@ -598,7 +607,10 @@ func isGeminiImageTaskModel(modelName string) bool {
 	if idx := strings.Index(modelName, ":"); idx >= 0 {
 		modelName = modelName[:idx]
 	}
-	return strings.Contains(modelName, "image") && strings.HasPrefix(modelName, "gemini-")
+	if strings.Contains(modelName, "image") && strings.HasPrefix(modelName, "gemini-") {
+		return true
+	}
+	return strings.HasPrefix(modelName, "nano-banana")
 }
 
 func buildGeminiImageRequestBody(req relaycommon.TaskSubmitReq) (io.Reader, error) {

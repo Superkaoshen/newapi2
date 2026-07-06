@@ -72,7 +72,7 @@ func TryResubmitAsyncImageTask(ctx context.Context, task *model.Task, reason str
 		if _, ok := tried[candidate.Id]; ok {
 			continue
 		}
-		if !supportsImageFailoverChannel(candidate.Type, modelName) {
+		if !supportsImageFailoverChannel(candidate, modelName) {
 			continue
 		}
 		tried[candidate.Id] = struct{}{}
@@ -145,13 +145,21 @@ func supportsAsyncImageFailoverChannel(channelType int) bool {
 	}
 }
 
-func supportsImageFailoverChannel(channelType int, modelName string) bool {
-	return supportsAsyncImageFailoverChannel(channelType) || supportsSyncImageFailoverChannel(channelType, modelName)
+func supportsImageFailoverChannel(ch *model.Channel, modelName string) bool {
+	if ch == nil {
+		return false
+	}
+	upstreamModel := resolveChannelMappedModelName(ch, modelName)
+	return supportsAsyncImageFailoverChannel(ch.Type) ||
+		supportsSyncImageFailoverChannel(ch.Type, upstreamModel)
 }
 
 func supportsSyncImageFailoverChannel(channelType int, modelName string) bool {
 	if _, ok := common.ChannelType2APIType(channelType); !ok {
 		return false
+	}
+	if channelType == constant.ChannelTypeGemini {
+		return supportsGeminiSyncImageModel(modelName)
 	}
 	return endpointTypesContain(common.GetEndpointTypesByChannelType(channelType, modelName), constant.EndpointTypeImageGeneration) ||
 		endpointTypesContain(model.GetModelSupportEndpointTypes(modelName), constant.EndpointTypeImageGeneration)
@@ -168,6 +176,7 @@ func endpointTypesContain(endpointTypes []constant.EndpointType, target constant
 
 func resubmitImageToChannel(ctx context.Context, task *model.Task, req relaycommon.TaskSubmitReq, modelName string, ch *model.Channel) (*TaskSubmitResult, *relaycommon.RelayInfo, error) {
 	var lastErr error
+	upstreamModel := resolveChannelMappedModelName(ch, modelName)
 	if supportsAsyncImageFailoverChannel(ch.Type) {
 		result, info, err := resubmitAsyncImageToChannel(ctx, task, req, modelName, ch)
 		if err == nil {
@@ -175,7 +184,7 @@ func resubmitImageToChannel(ctx context.Context, task *model.Task, req relaycomm
 		}
 		lastErr = err
 	}
-	if supportsSyncImageFailoverChannel(ch.Type, modelName) {
+	if supportsSyncImageFailoverChannel(ch.Type, upstreamModel) {
 		result, info, err := resubmitSyncImageToChannel(ctx, task, req, modelName, ch)
 		if err == nil {
 			return result, info, nil

@@ -669,7 +669,7 @@ func tryUpdateAsyncImageTask(task *model.Task) error {
 	if err != nil {
 		return err
 	}
-	if channelModel.Type == constant.ChannelTypeGemini && taskgemini.IsImageTaskModel(task.Properties.UpstreamModelName) {
+	if channelModel.Type == constant.ChannelTypeGemini && strings.TrimSpace(task.PrivateData.RequestBody) != "" {
 		return nil
 	}
 	if channelModel.Type != constant.ChannelTypeMihuifang {
