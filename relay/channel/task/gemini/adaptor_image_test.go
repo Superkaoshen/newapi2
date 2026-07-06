@@ -207,6 +207,53 @@ func TestGeminiImageDoResponseStoresInitialSuccessTaskInfo(t *testing.T) {
 	}
 }
 
+func TestParseGeminiImageCompletionAcceptsFileDataAndMarkdownURL(t *testing.T) {
+	responseBody := []byte(`{
+		"candidates": [
+			{
+				"content": {
+					"role": "model",
+					"parts": [
+						{
+							"text": "![generated](https://file5.aitohumanize.com/file/e312fb3496f74d8c947d2d5450cebb6b.png)"
+						},
+						{
+							"fileData": {
+								"mimeType": "image/png",
+								"fileUri": "https://file5.aitohumanize.com/file/e312fb3496f74d8c947d2d5450cebb6b.png"
+							}
+						}
+					]
+				},
+				"finishReason": "STOP",
+				"index": 0
+			}
+		],
+		"usageMetadata": {
+			"promptTokenCount": 12,
+			"candidatesTokenCount": 43,
+			"totalTokenCount": 55
+		},
+		"modelVersion": "nano-banana-pro"
+	}`)
+
+	taskInfo, taskData, err := parseGeminiImageCompletion("task_public", "gemini-3-pro-image", responseBody)
+	if err != nil {
+		t.Fatalf("parseGeminiImageCompletion error = %v", err)
+	}
+	url := "https://file5.aitohumanize.com/file/e312fb3496f74d8c947d2d5450cebb6b.png"
+	if taskInfo.Status != model.TaskStatusSuccess || taskInfo.Url != url {
+		t.Fatalf("taskInfo status/url = %s/%s, want SUCCESS/%s", taskInfo.Status, taskInfo.Url, url)
+	}
+	body := string(taskData)
+	if !strings.Contains(body, `"image_url":"`+url+`"`) {
+		t.Fatalf("taskData does not contain image_url: %s", body)
+	}
+	if strings.Contains(body, "image_urls") {
+		t.Fatalf("duplicate markdown/fileData URL should be deduplicated: %s", body)
+	}
+}
+
 func TestGeminiImageDoResponseReturnsSubmittedWithoutWaiting(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

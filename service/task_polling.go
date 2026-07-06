@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -163,27 +164,11 @@ func collectTaskForPolling(ctx context.Context, task *model.Task, taskChannelM m
 }
 
 func isLocalGeminiImageTask(task *model.Task) bool {
-	if task == nil || task.ChannelId <= 0 {
+	if task == nil {
 		return false
 	}
-	if !strings.HasPrefix(task.GetUpstreamTaskID(), "task_") {
-		return false
-	}
-	modelName := strings.ToLower(strings.TrimSpace(firstNonEmpty(task.Properties.UpstreamModelName, task.Properties.OriginModelName)))
-	modelName = strings.TrimPrefix(modelName, "models/")
-	if idx := strings.Index(modelName, ":"); idx >= 0 {
-		modelName = modelName[:idx]
-	}
-	return strings.HasPrefix(modelName, "gemini-") && strings.Contains(modelName, "image")
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
+	return task.Platform == constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeGemini)) &&
+		strings.TrimSpace(task.PrivateData.RequestBody) != ""
 }
 
 // DispatchPlatformUpdate 按平台分发轮询更新

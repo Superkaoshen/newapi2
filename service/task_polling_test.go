@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/stretchr/testify/require"
 )
@@ -26,4 +28,22 @@ func TestCollectTaskForPollingSkipsMissingChannel(t *testing.T) {
 	require.Empty(t, taskChannelM)
 	require.Empty(t, taskM)
 	require.Empty(t, nullTaskIds)
+}
+
+func TestLocalGeminiImageTaskSkipsPollingWithMappedNanoBananaModel(t *testing.T) {
+	task := &model.Task{
+		ID:        1,
+		TaskID:    "task_public",
+		ChannelId: 6,
+		Platform:  constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeGemini)),
+		Properties: model.Properties{
+			OriginModelName:   "gemini-3-pro-image",
+			UpstreamModelName: "nano-banana-pro",
+		},
+		PrivateData: model.TaskPrivateData{
+			RequestBody: "encoded-request-body",
+		},
+	}
+
+	require.True(t, isLocalGeminiImageTask(task))
 }

@@ -523,7 +523,7 @@ func parseGeminiImageCompletion(requestID, modelCode string, responseBody []byte
 	if err := common.Unmarshal(responseBody, &geminiResp); err != nil {
 		return nil, nil, errors.Wrapf(err, "body: %s", responseBody)
 	}
-	saved, err := saveGeminiInlineImages(geminiResp)
+	saved, err := collectGeminiImageOutputs(geminiResp)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -718,7 +718,7 @@ func (a *TaskAdaptor) doImageResponse(c *gin.Context, responseBody []byte, info 
 	if err := common.Unmarshal(responseBody, &geminiResp); err != nil {
 		return "", nil, service.TaskErrorWrapper(errors.Wrapf(err, "body: %s", responseBody), "unmarshal_response_failed", http.StatusInternalServerError)
 	}
-	saved, err := saveGeminiInlineImages(geminiResp)
+	saved, err := collectGeminiImageOutputs(geminiResp)
 	if err != nil {
 		return "", nil, service.TaskErrorWrapper(err, "save_result_file_failed", http.StatusInternalServerError)
 	}
@@ -738,10 +738,18 @@ func (a *TaskAdaptor) doImageResponse(c *gin.Context, responseBody []byte, info 
 	return info.PublicTaskID, taskData, nil
 }
 
-func saveGeminiInlineImages(resp dto.GeminiChatResponse) ([]string, error) {
+var geminiMarkdownImageURLRe = regexp.MustCompile(`!\[[^\]]*\]\((https?://[^)\s]+)\)`)
+
+func collectGeminiImageOutputs(resp dto.GeminiChatResponse) ([]string, error) {
 	saved := make([]string, 0)
 	for _, candidate := range resp.Candidates {
 		for _, part := range candidate.Content.Parts {
+			if part.FileData != nil && isGeminiImageFileData(part.FileData) {
+				saved = appendUniqueGeminiImageOutput(saved, part.FileData.FileUri)
+			}
+			for _, url := range geminiMarkdownImageURLs(part.Text) {
+				saved = appendUniqueGeminiImageOutput(saved, url)
+			}
 			if part.InlineData == nil || !strings.HasPrefix(strings.ToLower(part.InlineData.MimeType), "image/") {
 				continue
 			}
@@ -750,15 +758,53 @@ func saveGeminiInlineImages(resp dto.GeminiChatResponse) ([]string, error) {
 				return nil, err
 			}
 			if strings.TrimSpace(ossURL) == "" {
-				return nil, fmt.Errorf("aliyun oss is not enabled or configured")
+				if len(saved) == 0 {
+					return nil, fmt.Errorf("aliyun oss is not enabled or configured")
+				}
+				continue
 			}
-			saved = append(saved, ossURL)
+			saved = appendUniqueGeminiImageOutput(saved, ossURL)
 		}
 	}
 	if len(saved) == 0 {
 		return nil, fmt.Errorf("completed response contains no result image")
 	}
 	return saved, nil
+}
+
+func isGeminiImageFileData(fileData *dto.GeminiFileData) bool {
+	if fileData == nil || strings.TrimSpace(fileData.FileUri) == "" {
+		return false
+	}
+	mimeType := strings.ToLower(strings.TrimSpace(fileData.MimeType))
+	return mimeType == "" || strings.HasPrefix(mimeType, "image/")
+}
+
+func geminiMarkdownImageURLs(text string) []string {
+	matches := geminiMarkdownImageURLRe.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	urls := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) > 1 {
+			urls = append(urls, match[1])
+		}
+	}
+	return urls
+}
+
+func appendUniqueGeminiImageOutput(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, current := range values {
+		if current == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func geminiImagePublicResponse(requestID, modelCode string, saved []string) geminiImageTaskResponse {
