@@ -13,6 +13,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -251,6 +252,104 @@ func TestParseGeminiImageCompletionAcceptsFileDataAndMarkdownURL(t *testing.T) {
 	}
 	if strings.Contains(body, "image_urls") {
 		t.Fatalf("duplicate markdown/fileData URL should be deduplicated: %s", body)
+	}
+}
+
+func TestParseGeminiImageCompletionSavesFileDataURLToOSS(t *testing.T) {
+	oldOptions := snapshotGeminiOSSOptions()
+	defer setGeminiOSSOptions(oldOptions)
+	oldMaxFileDownloadMB := constant.MaxFileDownloadMB
+	constant.MaxFileDownloadMB = 1
+	defer func() { constant.MaxFileDownloadMB = oldMaxFileDownloadMB }()
+	fetchSetting := system_setting.GetFetchSetting()
+	oldAllowPrivateIP := fetchSetting.AllowPrivateIp
+	oldAllowedPorts := append([]string(nil), fetchSetting.AllowedPorts...)
+	fetchSetting.AllowPrivateIp = true
+	fetchSetting.AllowedPorts = []string{"1-65535"}
+	defer func() {
+		fetchSetting.AllowPrivateIp = oldAllowPrivateIP
+		fetchSetting.AllowedPorts = oldAllowedPorts
+	}()
+
+	var uploaded int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte{
+				0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+				0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+				0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+				0x08, 0x04, 0x00, 0x00, 0x00, 0xb5, 0x1c, 0x0c,
+				0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41,
+				0x54, 0x78, 0xda, 0x63, 0xfc, 0xff, 0x1f, 0x00,
+				0x03, 0x03, 0x02, 0x00, 0xef, 0xbf, 0xa7, 0xdb,
+				0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+				0xae, 0x42, 0x60, 0x82,
+			})
+		case http.MethodPut:
+			uploaded++
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer ts.Close()
+	service.InitHttpClient()
+	setGeminiOSSOptions(map[string]string{
+		"AliyunOssEnabled":         "true",
+		"AliyunOssEndpoint":        ts.URL,
+		"AliyunOssBucket":          "127",
+		"AliyunOssAccessKeyId":     "id",
+		"AliyunOssAccessKeySecret": "secret",
+		"AliyunOssPathPrefix":      "async-images",
+		"AliyunOssPublicBaseUrl":   "https://cdn.example.com",
+	})
+
+	sourceURL := ts.URL + "/source.png"
+	responseBody := []byte(`{
+		"candidates": [{
+			"content": {
+				"parts": [{
+					"fileData": {
+						"mimeType": "image/png",
+						"fileUri": "` + sourceURL + `"
+					}
+				}]
+			}
+		}]
+	}`)
+
+	taskInfo, taskData, err := parseGeminiImageCompletion("task_public", "gemini-3-pro-image", responseBody)
+	if err != nil {
+		t.Fatalf("parseGeminiImageCompletion error = %v", err)
+	}
+	if uploaded != 1 {
+		t.Fatalf("uploaded = %d, want 1", uploaded)
+	}
+	if !strings.HasPrefix(taskInfo.Url, "https://cdn.example.com/async-images/") {
+		t.Fatalf("taskInfo.Url = %s, want CDN URL", taskInfo.Url)
+	}
+	body := string(taskData)
+	if strings.Contains(body, sourceURL) {
+		t.Fatalf("taskData leaked upstream URL: %s", body)
+	}
+	if !strings.Contains(body, "https://cdn.example.com/async-images/") {
+		t.Fatalf("taskData does not contain CDN URL: %s", body)
+	}
+}
+
+func TestTryResumeImageTaskSkipsInProgressTask(t *testing.T) {
+	task := &model.Task{
+		TaskID: "task_public",
+		Status: model.TaskStatusInProgress,
+		PrivateData: model.TaskPrivateData{
+			RequestBody: "encoded-request-body",
+		},
+	}
+
+	if TryResumeImageTask(task, "https://example.com", "sk-test", "") {
+		t.Fatal("TryResumeImageTask should skip in-progress Gemini image task")
 	}
 }
 

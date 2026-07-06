@@ -383,6 +383,9 @@ func TryResumeImageTask(task *model.Task, baseURL, apiKey, proxy string) bool {
 	if task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure {
 		return false
 	}
+	if task.Status == model.TaskStatusInProgress {
+		return false
+	}
 	requestBody := strings.TrimSpace(task.PrivateData.RequestBody)
 	if requestBody == "" {
 		return false
@@ -745,10 +748,18 @@ func collectGeminiImageOutputs(resp dto.GeminiChatResponse) ([]string, error) {
 	for _, candidate := range resp.Candidates {
 		for _, part := range candidate.Content.Parts {
 			if part.FileData != nil && isGeminiImageFileData(part.FileData) {
-				saved = appendUniqueGeminiImageOutput(saved, part.FileData.FileUri)
+				ossURL, err := saveGeminiImageURL(part.FileData.FileUri)
+				if err != nil {
+					return nil, err
+				}
+				saved = appendUniqueGeminiImageOutput(saved, ossURL)
 			}
 			for _, url := range geminiMarkdownImageURLs(part.Text) {
-				saved = appendUniqueGeminiImageOutput(saved, url)
+				ossURL, err := saveGeminiImageURL(url)
+				if err != nil {
+					return nil, err
+				}
+				saved = appendUniqueGeminiImageOutput(saved, ossURL)
 			}
 			if part.InlineData == nil || !strings.HasPrefix(strings.ToLower(part.InlineData.MimeType), "image/") {
 				continue
@@ -770,6 +781,14 @@ func collectGeminiImageOutputs(resp dto.GeminiChatResponse) ([]string, error) {
 		return nil, fmt.Errorf("completed response contains no result image")
 	}
 	return saved, nil
+}
+
+func saveGeminiImageURL(rawURL string) (string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", nil
+	}
+	return service.SaveImageURLToAliyunOSS(rawURL, "")
 }
 
 func isGeminiImageFileData(fileData *dto.GeminiFileData) bool {
