@@ -74,6 +74,7 @@ func InitOptionMap() {
 	common.OptionMap["WorkerUrl"] = system_setting.WorkerUrl
 	common.OptionMap["WorkerValidKey"] = system_setting.WorkerValidKey
 	common.OptionMap["WorkerAllowHttpImageRequestEnabled"] = strconv.FormatBool(system_setting.WorkerAllowHttpImageRequestEnabled)
+	common.OptionMap["ImageStorageProvider"] = ""
 	common.OptionMap["AliyunOssEnabled"] = "false"
 	common.OptionMap["AliyunOssEndpoint"] = ""
 	common.OptionMap["AliyunOssBucket"] = ""
@@ -82,6 +83,14 @@ func InitOptionMap() {
 	common.OptionMap["AliyunOssPathPrefix"] = "openai-images"
 	common.OptionMap["AliyunOssPublicBaseUrl"] = ""
 	common.OptionMap["AliyunOssUploadTimeoutSeconds"] = "30"
+	common.OptionMap["R2Endpoint"] = ""
+	common.OptionMap["R2Bucket"] = ""
+	common.OptionMap["R2AccessKeyId"] = ""
+	common.OptionMap["R2AccessKeySecret"] = ""
+	common.OptionMap["R2PathPrefix"] = "openai-images"
+	common.OptionMap["R2PublicBaseUrl"] = ""
+	common.OptionMap["R2Region"] = "auto"
+	common.OptionMap["R2UploadTimeoutSeconds"] = "30"
 	common.OptionMap["PayAddress"] = ""
 	common.OptionMap["CustomCallbackAddress"] = ""
 	common.OptionMap["EpayId"] = ""

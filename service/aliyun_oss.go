@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"mime"
@@ -13,6 +15,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,14 +35,50 @@ type AliyunOssConfig struct {
 	UploadTimeout   int
 }
 
+type R2Config struct {
+	Enabled         bool
+	Endpoint        string
+	Bucket          string
+	AccessKeyId     string
+	AccessKeySecret string
+	PathPrefix      string
+	PublicBaseURL   string
+	Region          string
+	UploadTimeout   int
+}
+
 var markdownImageURLRegex = regexp.MustCompile(`!\[[^\]]*]\(([^)\r\n]+)\)`)
+
+const (
+	objectStorageProviderDisabled     = "disabled"
+	objectStorageProviderAliyunOSS    = "aliyun_oss"
+	objectStorageProviderCloudflareR2 = "cloudflare_r2"
+)
+
+func getImageStorageProviderLocked() string {
+	provider := strings.TrimSpace(common.OptionMap["ImageStorageProvider"])
+	switch provider {
+	case objectStorageProviderDisabled, objectStorageProviderAliyunOSS, objectStorageProviderCloudflareR2:
+		return provider
+	}
+	if strings.EqualFold(strings.TrimSpace(common.OptionMap["AliyunOssEnabled"]), "true") {
+		return objectStorageProviderAliyunOSS
+	}
+	return objectStorageProviderDisabled
+}
+
+func GetImageStorageProvider() string {
+	common.OptionMapRWMutex.RLock()
+	defer common.OptionMapRWMutex.RUnlock()
+	return getImageStorageProviderLocked()
+}
 
 func GetAliyunOssConfig() AliyunOssConfig {
 	common.OptionMapRWMutex.RLock()
 	defer common.OptionMapRWMutex.RUnlock()
 
 	return AliyunOssConfig{
-		Enabled:         common.OptionMap["AliyunOssEnabled"] == "true",
+		Enabled:         getImageStorageProviderLocked() == objectStorageProviderAliyunOSS,
 		Endpoint:        strings.TrimSpace(common.OptionMap["AliyunOssEndpoint"]),
 		Bucket:          strings.TrimSpace(common.OptionMap["AliyunOssBucket"]),
 		AccessKeyId:     strings.TrimSpace(common.OptionMap["AliyunOssAccessKeyId"]),
@@ -47,6 +86,23 @@ func GetAliyunOssConfig() AliyunOssConfig {
 		PathPrefix:      strings.TrimSpace(common.OptionMap["AliyunOssPathPrefix"]),
 		PublicBaseURL:   strings.TrimSpace(common.OptionMap["AliyunOssPublicBaseUrl"]),
 		UploadTimeout:   common.String2Int(strings.TrimSpace(common.OptionMap["AliyunOssUploadTimeoutSeconds"])),
+	}
+}
+
+func GetR2Config() R2Config {
+	common.OptionMapRWMutex.RLock()
+	defer common.OptionMapRWMutex.RUnlock()
+
+	return R2Config{
+		Enabled:         getImageStorageProviderLocked() == objectStorageProviderCloudflareR2,
+		Endpoint:        strings.TrimSpace(common.OptionMap["R2Endpoint"]),
+		Bucket:          strings.TrimSpace(common.OptionMap["R2Bucket"]),
+		AccessKeyId:     strings.TrimSpace(common.OptionMap["R2AccessKeyId"]),
+		AccessKeySecret: strings.TrimSpace(common.OptionMap["R2AccessKeySecret"]),
+		PathPrefix:      strings.TrimSpace(common.OptionMap["R2PathPrefix"]),
+		PublicBaseURL:   strings.TrimSpace(common.OptionMap["R2PublicBaseUrl"]),
+		Region:          strings.TrimSpace(common.OptionMap["R2Region"]),
+		UploadTimeout:   common.String2Int(strings.TrimSpace(common.OptionMap["R2UploadTimeoutSeconds"])),
 	}
 }
 
@@ -58,13 +114,24 @@ func (c AliyunOssConfig) IsEnabledAndValid() bool {
 		c.AccessKeySecret != ""
 }
 
+func (c R2Config) IsEnabledAndValid() bool {
+	return c.Enabled &&
+		c.Endpoint != "" &&
+		c.Bucket != "" &&
+		c.AccessKeyId != "" &&
+		c.AccessKeySecret != ""
+}
+
 func IsAliyunOssEnabled() bool {
 	return GetAliyunOssConfig().IsEnabledAndValid()
 }
 
+func IsObjectStorageEnabled() bool {
+	return GetAliyunOssConfig().IsEnabledAndValid() || GetR2Config().IsEnabledAndValid()
+}
+
 func ReplaceMarkdownImageURLsWithAliyunOSS(content string, upstreamBaseURL string) (string, bool) {
-	cfg := GetAliyunOssConfig()
-	if !cfg.IsEnabledAndValid() {
+	if !IsObjectStorageEnabled() {
 		return content, false
 	}
 	if content == "" || !strings.Contains(content, "](") {
@@ -94,7 +161,7 @@ func ReplaceMarkdownImageURLsWithAliyunOSS(content string, upstreamBaseURL strin
 
 		savedURL, err := SaveImageURLToAliyunOSS(rawURL, upstreamBaseURL)
 		if err != nil {
-			common.SysError(fmt.Sprintf("failed to save image url to aliyun oss: %s", err.Error()))
+			common.SysError(fmt.Sprintf("failed to save image url to object storage: %s", err.Error()))
 			cache[rawURL] = rawURL
 			return match
 		}
@@ -111,35 +178,76 @@ func ReplaceMarkdownImageURLsWithAliyunOSS(content string, upstreamBaseURL strin
 }
 
 func SaveImageURLToAliyunOSS(rawURL string, upstreamBaseURL string) (string, error) {
-	cfg := GetAliyunOssConfig()
-	if !cfg.IsEnabledAndValid() {
+	switch GetImageStorageProvider() {
+	case objectStorageProviderAliyunOSS:
+		cfg := GetAliyunOssConfig()
+		if !cfg.IsEnabledAndValid() {
+			return rawURL, nil
+		}
+		return saveImageURLToAliyunOSSWithConfig(cfg, rawURL, upstreamBaseURL)
+	case objectStorageProviderCloudflareR2:
+		cfg := GetR2Config()
+		if !cfg.IsEnabledAndValid() {
+			return rawURL, nil
+		}
+		return saveImageURLToR2WithConfig(cfg, rawURL, upstreamBaseURL)
+	default:
 		return rawURL, nil
 	}
-	return saveImageURLToAliyunOSSWithConfig(cfg, rawURL, upstreamBaseURL)
 }
 
 func StrictSaveImageURLToAliyunOSS(rawURL string, upstreamBaseURL string) (string, error) {
-	cfg := GetAliyunOssConfig()
-	if !cfg.IsEnabledAndValid() {
-		return "", fmt.Errorf("aliyun oss is not enabled or configured")
-	}
-	return saveImageURLToAliyunOSSWithConfig(cfg, rawURL, upstreamBaseURL)
+	return strictSaveURLToObjectStorage(rawURL, upstreamBaseURL, true)
 }
 
 func StrictSaveFileURLToAliyunOSS(rawURL string, upstreamBaseURL string) (string, error) {
-	cfg := GetAliyunOssConfig()
-	if !cfg.IsEnabledAndValid() {
-		return "", fmt.Errorf("aliyun oss is not enabled or configured")
+	return strictSaveURLToObjectStorage(rawURL, upstreamBaseURL, false)
+}
+
+func strictSaveURLToObjectStorage(rawURL string, upstreamBaseURL string, requireImage bool) (string, error) {
+	switch GetImageStorageProvider() {
+	case objectStorageProviderAliyunOSS:
+		cfg := GetAliyunOssConfig()
+		if !cfg.IsEnabledAndValid() {
+			return "", fmt.Errorf("aliyun oss or cloudflare r2 is not enabled or configured")
+		}
+		return saveURLToAliyunOSSWithConfig(cfg, rawURL, upstreamBaseURL, requireImage)
+	case objectStorageProviderCloudflareR2:
+		cfg := GetR2Config()
+		if !cfg.IsEnabledAndValid() {
+			return "", fmt.Errorf("aliyun oss or cloudflare r2 is not enabled or configured")
+		}
+		return saveURLToR2WithConfig(cfg, rawURL, upstreamBaseURL, requireImage)
+	default:
+		return "", fmt.Errorf("aliyun oss or cloudflare r2 is not enabled or configured")
 	}
-	return saveFileURLToAliyunOSSWithConfig(cfg, rawURL, upstreamBaseURL)
+}
+
+func saveImageURLToR2WithConfig(cfg R2Config, rawURL string, upstreamBaseURL string) (string, error) {
+	return saveURLToR2WithConfig(cfg, rawURL, upstreamBaseURL, true)
+}
+
+func saveURLToR2WithConfig(cfg R2Config, rawURL string, upstreamBaseURL string, requireImage bool) (string, error) {
+	resolvedURL, err := resolveImageURL(rawURL, upstreamBaseURL)
+	if err != nil {
+		return "", err
+	}
+
+	data, contentType, err := downloadURLBytes(resolvedURL, requireImage)
+	if err != nil {
+		return "", err
+	}
+
+	objectKey := buildAliyunOssObjectKeyWithFallback(cfg.PathPrefix, contentType, extensionFromURL(resolvedURL))
+	if err := uploadBytesToR2(cfg, objectKey, data, contentType); err != nil {
+		return "", err
+	}
+
+	return buildR2PublicURL(cfg, objectKey)
 }
 
 func saveImageURLToAliyunOSSWithConfig(cfg AliyunOssConfig, rawURL string, upstreamBaseURL string) (string, error) {
 	return saveURLToAliyunOSSWithConfig(cfg, rawURL, upstreamBaseURL, true)
-}
-
-func saveFileURLToAliyunOSSWithConfig(cfg AliyunOssConfig, rawURL string, upstreamBaseURL string) (string, error) {
-	return saveURLToAliyunOSSWithConfig(cfg, rawURL, upstreamBaseURL, false)
 }
 
 func saveURLToAliyunOSSWithConfig(cfg AliyunOssConfig, rawURL string, upstreamBaseURL string, requireImage bool) (string, error) {
@@ -162,8 +270,21 @@ func saveURLToAliyunOSSWithConfig(cfg AliyunOssConfig, rawURL string, upstreamBa
 }
 
 func SaveBase64ImageToAliyunOSS(data string, contentType string) (string, error) {
-	cfg := GetAliyunOssConfig()
-	if !cfg.IsEnabledAndValid() {
+	provider := GetImageStorageProvider()
+	var aliyunCfg AliyunOssConfig
+	var r2Cfg R2Config
+	switch provider {
+	case objectStorageProviderAliyunOSS:
+		aliyunCfg = GetAliyunOssConfig()
+		if !aliyunCfg.IsEnabledAndValid() {
+			return "", nil
+		}
+	case objectStorageProviderCloudflareR2:
+		r2Cfg = GetR2Config()
+		if !r2Cfg.IsEnabledAndValid() {
+			return "", nil
+		}
+	default:
 		return "", nil
 	}
 
@@ -193,12 +314,22 @@ func SaveBase64ImageToAliyunOSS(data string, contentType string) (string, error)
 		contentType = detectedContentType
 	}
 
-	objectKey := buildAliyunOssObjectKey(cfg.PathPrefix, contentType)
-	if err := uploadBytesToAliyunOSS(cfg, objectKey, imageBytes, contentType); err != nil {
-		return "", err
+	switch provider {
+	case objectStorageProviderAliyunOSS:
+		objectKey := buildAliyunOssObjectKey(aliyunCfg.PathPrefix, contentType)
+		if err := uploadBytesToAliyunOSS(aliyunCfg, objectKey, imageBytes, contentType); err != nil {
+			return "", err
+		}
+		return buildAliyunOssPublicURL(aliyunCfg, objectKey)
+	case objectStorageProviderCloudflareR2:
+		objectKey := buildAliyunOssObjectKey(r2Cfg.PathPrefix, contentType)
+		if err := uploadBytesToR2(r2Cfg, objectKey, imageBytes, contentType); err != nil {
+			return "", err
+		}
+		return buildR2PublicURL(r2Cfg, objectKey)
+	default:
+		return "", nil
 	}
-
-	return buildAliyunOssPublicURL(cfg, objectKey)
 }
 
 func detectImageContentTypeFromBytes(data []byte) string {
@@ -270,7 +401,7 @@ func downloadImageBytes(originURL string) ([]byte, string, error) {
 }
 
 func downloadURLBytes(originURL string, requireImage bool) ([]byte, string, error) {
-	resp, err := DoDownloadRequest(originURL, "aliyun_oss_image_replace")
+	resp, err := DoDownloadRequest(originURL, "object_storage_url_replace")
 	if err != nil {
 		return nil, "", err
 	}
@@ -495,4 +626,217 @@ func buildAliyunOssPublicURL(cfg AliyunOssConfig, objectKey string) (string, err
 		return "", err
 	}
 	return strings.TrimRight(uploadBaseURL, "/") + "/" + objectKey, nil
+}
+
+func uploadBytesToR2(cfg R2Config, objectKey string, data []byte, contentType string) error {
+	uploadBaseURL, err := buildR2UploadBaseURL(cfg)
+	if err != nil {
+		return err
+	}
+
+	objectKey = strings.TrimLeft(objectKey, "/")
+	contentType = canonicalContentType(contentType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	putURL := strings.TrimRight(uploadBaseURL, "/") + "/" + escapeR2Path(objectKey)
+	parsedURL, err := url.Parse(putURL)
+	if err != nil {
+		return err
+	}
+	if parsedURL.Host == "" {
+		return fmt.Errorf("cloudflare r2 upload url host is empty")
+	}
+
+	now := time.Now().UTC()
+	amzDate := now.Format("20060102T150405Z")
+	dateStamp := now.Format("20060102")
+	region := normalizeR2Region(cfg.Region)
+	payloadHash := sha256Hex(data)
+
+	headers := map[string]string{
+		"content-type":         contentType,
+		"host":                 parsedURL.Host,
+		"x-amz-content-sha256": payloadHash,
+		"x-amz-date":           amzDate,
+	}
+	canonicalHeaders, signedHeaders := buildR2CanonicalHeaders(headers)
+	canonicalRequest := strings.Join([]string{
+		http.MethodPut,
+		parsedURL.EscapedPath(),
+		"",
+		canonicalHeaders,
+		signedHeaders,
+		payloadHash,
+	}, "\n")
+
+	credentialScope := fmt.Sprintf("%s/%s/s3/aws4_request", dateStamp, region)
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256",
+		amzDate,
+		credentialScope,
+		sha256Hex([]byte(canonicalRequest)),
+	}, "\n")
+	signature := hex.EncodeToString(r2HMACSHA256(deriveR2SigningKey(cfg.AccessKeySecret, dateStamp, region), []byte(stringToSign)))
+	authorization := fmt.Sprintf(
+		"AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+		cfg.AccessKeyId,
+		credentialScope,
+		signedHeaders,
+		signature,
+	)
+
+	timeout := cfg.UploadTimeout
+	if timeout <= 0 {
+		timeout = 30
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	common.SysLog(fmt.Sprintf("uploading to cloudflare r2: endpoint=%s, bucket=%s, key=%s, size=%d, timeout=%ds", common.MaskSensitiveInfo(uploadBaseURL), cfg.Bucket, objectKey, len(data), timeout))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, parsedURL.String(), bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Host = parsedURL.Host
+	req.Header.Set("Authorization", authorization)
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
+	req.Header.Set("X-Amz-Date", amzDate)
+	req.ContentLength = int64(len(data))
+
+	resp, err := GetHttpClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer CloseResponseBodyGracefully(resp)
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("cloudflare r2 upload failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+func buildR2UploadBaseURL(cfg R2Config) (string, error) {
+	endpoint := strings.TrimSpace(cfg.Endpoint)
+	if endpoint == "" {
+		return "", fmt.Errorf("cloudflare r2 endpoint is empty")
+	}
+	if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+		endpoint = "https://" + endpoint
+	}
+
+	parsedURL, err := url.Parse(endpoint)
+	if err != nil {
+		return "", err
+	}
+
+	host := strings.TrimSpace(parsedURL.Host)
+	if host == "" {
+		host = strings.TrimSpace(parsedURL.Path)
+		parsedURL.Path = ""
+	}
+	if host == "" {
+		return "", fmt.Errorf("cloudflare r2 endpoint host is empty")
+	}
+
+	bucket := strings.Trim(strings.TrimSpace(cfg.Bucket), "/")
+	if bucket == "" {
+		return "", fmt.Errorf("cloudflare r2 bucket is empty")
+	}
+
+	scheme := parsedURL.Scheme
+	if scheme == "" {
+		scheme = "https"
+	}
+
+	pathParts := make([]string, 0, 2)
+	basePath := strings.Trim(parsedURL.EscapedPath(), "/")
+	if basePath != "" && strings.Trim(parsedURL.Path, "/") != bucket {
+		pathParts = append(pathParts, basePath)
+	}
+	pathParts = append(pathParts, url.PathEscape(bucket))
+
+	return fmt.Sprintf("%s://%s/%s", scheme, host, strings.Join(pathParts, "/")), nil
+}
+
+func buildR2PublicURL(cfg R2Config, objectKey string) (string, error) {
+	objectKey = strings.TrimLeft(objectKey, "/")
+	if cfg.PublicBaseURL != "" {
+		baseURL := strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/")
+		if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+			baseURL = "https://" + baseURL
+		}
+		return baseURL + "/" + escapeR2Path(objectKey), nil
+	}
+
+	uploadBaseURL, err := buildR2UploadBaseURL(cfg)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(uploadBaseURL, "/") + "/" + escapeR2Path(objectKey), nil
+}
+
+func normalizeR2Region(region string) string {
+	region = strings.TrimSpace(region)
+	if region == "" {
+		return "auto"
+	}
+	return region
+}
+
+func buildR2CanonicalHeaders(headers map[string]string) (string, string) {
+	names := make([]string, 0, len(headers))
+	normalized := make(map[string]string, len(headers))
+	for name, value := range headers {
+		lowerName := strings.ToLower(strings.TrimSpace(name))
+		if lowerName == "" {
+			continue
+		}
+		names = append(names, lowerName)
+		normalized[lowerName] = strings.Join(strings.Fields(value), " ")
+	}
+	sort.Strings(names)
+
+	var builder strings.Builder
+	for _, name := range names {
+		builder.WriteString(name)
+		builder.WriteByte(':')
+		builder.WriteString(normalized[name])
+		builder.WriteByte('\n')
+	}
+	return builder.String(), strings.Join(names, ";")
+}
+
+func deriveR2SigningKey(secret string, dateStamp string, region string) []byte {
+	dateKey := r2HMACSHA256([]byte("AWS4"+secret), []byte(dateStamp))
+	regionKey := r2HMACSHA256(dateKey, []byte(region))
+	serviceKey := r2HMACSHA256(regionKey, []byte("s3"))
+	return r2HMACSHA256(serviceKey, []byte("aws4_request"))
+}
+
+func r2HMACSHA256(key []byte, data []byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(data)
+	return mac.Sum(nil)
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func escapeR2Path(rawPath string) string {
+	rawPath = strings.TrimLeft(rawPath, "/")
+	if rawPath == "" {
+		return ""
+	}
+	segments := strings.Split(rawPath, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	return strings.Join(segments, "/")
 }

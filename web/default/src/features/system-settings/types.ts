@@ -292,6 +292,7 @@ export type OperationsSettings = {
   WorkerUrl: string
   WorkerValidKey: string
   WorkerAllowHttpImageRequestEnabled: boolean
+  ImageStorageProvider: 'disabled' | 'aliyun_oss' | 'cloudflare_r2' | ''
   AliyunOssEnabled: boolean
   AliyunOssEndpoint: string
   AliyunOssBucket: string
@@ -300,6 +301,14 @@ export type OperationsSettings = {
   AliyunOssPathPrefix: string
   AliyunOssPublicBaseUrl: string
   AliyunOssUploadTimeoutSeconds: number
+  R2Endpoint: string
+  R2Bucket: string
+  R2AccessKeyId: string
+  R2AccessKeySecret: string
+  R2PathPrefix: string
+  R2PublicBaseUrl: string
+  R2Region: string
+  R2UploadTimeoutSeconds: number
   LogConsumeEnabled: boolean
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number

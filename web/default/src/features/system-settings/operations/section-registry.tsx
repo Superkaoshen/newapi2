@@ -97,10 +97,11 @@ const OPERATIONS_SECTIONS = [
   },
   {
     id: 'aliyun-oss',
-    titleKey: 'Aliyun OSS',
+    titleKey: 'Object Storage',
     build: (settings: OperationsSettings) => (
       <AliyunOssSettingsSection
         defaultValues={{
+          ImageStorageProvider: settings.ImageStorageProvider,
           AliyunOssEnabled: settings.AliyunOssEnabled,
           AliyunOssEndpoint: settings.AliyunOssEndpoint,
           AliyunOssBucket: settings.AliyunOssBucket,
@@ -110,6 +111,14 @@ const OPERATIONS_SECTIONS = [
           AliyunOssPublicBaseUrl: settings.AliyunOssPublicBaseUrl,
           AliyunOssUploadTimeoutSeconds:
             settings.AliyunOssUploadTimeoutSeconds,
+          R2Endpoint: settings.R2Endpoint,
+          R2Bucket: settings.R2Bucket,
+          R2AccessKeyId: settings.R2AccessKeyId,
+          R2AccessKeySecret: settings.R2AccessKeySecret,
+          R2PathPrefix: settings.R2PathPrefix,
+          R2PublicBaseUrl: settings.R2PublicBaseUrl,
+          R2Region: settings.R2Region,
+          R2UploadTimeoutSeconds: settings.R2UploadTimeoutSeconds,
         }}
       />
     ),
