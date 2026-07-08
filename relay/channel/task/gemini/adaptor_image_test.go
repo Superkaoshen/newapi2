@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -263,7 +264,11 @@ func TestGeminiImageDoResponseStoresInitialSuccessTaskInfo(t *testing.T) {
 	}
 }
 
-func TestParseGeminiImageCompletionAcceptsFileDataAndMarkdownURL(t *testing.T) {
+func TestParseGeminiImageCompletionRequiresOSSForRemoteURL(t *testing.T) {
+	oldOptions := snapshotGeminiOSSOptions()
+	defer setGeminiOSSOptions(oldOptions)
+	setGeminiOSSOptions(map[string]string{"AliyunOssEnabled": "false"})
+
 	responseBody := []byte(`{
 		"candidates": [
 			{
@@ -293,20 +298,9 @@ func TestParseGeminiImageCompletionAcceptsFileDataAndMarkdownURL(t *testing.T) {
 		"modelVersion": "nano-banana-pro"
 	}`)
 
-	taskInfo, taskData, err := parseGeminiImageCompletion("task_public", "gemini-3-pro-image", responseBody)
-	if err != nil {
-		t.Fatalf("parseGeminiImageCompletion error = %v", err)
-	}
-	url := "https://file5.aitohumanize.com/file/e312fb3496f74d8c947d2d5450cebb6b.png"
-	if taskInfo.Status != model.TaskStatusSuccess || taskInfo.Url != url {
-		t.Fatalf("taskInfo status/url = %s/%s, want SUCCESS/%s", taskInfo.Status, taskInfo.Url, url)
-	}
-	body := string(taskData)
-	if !strings.Contains(body, `"image_url":"`+url+`"`) {
-		t.Fatalf("taskData does not contain image_url: %s", body)
-	}
-	if strings.Contains(body, "image_urls") {
-		t.Fatalf("duplicate markdown/fileData URL should be deduplicated: %s", body)
+	_, _, err := parseGeminiImageCompletion("task_public", "gemini-3-pro-image", responseBody)
+	if err == nil || !strings.Contains(err.Error(), "aliyun oss") {
+		t.Fatalf("parseGeminiImageCompletion error = %v, want aliyun oss error", err)
 	}
 }
 
@@ -404,15 +398,16 @@ func TestParseGeminiImageCompletionSavesFileDataURLToOSS(t *testing.T) {
 
 func TestTryResumeImageTaskSkipsInProgressTask(t *testing.T) {
 	task := &model.Task{
-		TaskID: "task_public",
-		Status: model.TaskStatusInProgress,
+		TaskID:    "task_public",
+		Status:    model.TaskStatusInProgress,
+		StartTime: time.Now().Unix(),
 		PrivateData: model.TaskPrivateData{
 			RequestBody: "encoded-request-body",
 		},
 	}
 
 	if TryResumeImageTask(task, "https://example.com", "sk-test", "") {
-		t.Fatal("TryResumeImageTask should skip in-progress Gemini image task")
+		t.Fatal("TryResumeImageTask should skip recent in-progress Gemini image task")
 	}
 }
 

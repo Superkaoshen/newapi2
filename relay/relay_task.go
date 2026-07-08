@@ -807,8 +807,12 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 	if adaptor == nil {
 		return nil
 	}
+	key := channelModel.Key
+	if task.PrivateData.Key != "" {
+		key = task.PrivateData.Key
+	}
 
-	resp, err := adaptor.FetchTask(baseURL, channelModel.Key, map[string]any{
+	resp, err := adaptor.FetchTask(baseURL, key, map[string]any{
 		"task_id":        task.GetUpstreamTaskID(),
 		"action":         task.Action,
 		"image_protocol": task.PrivateData.ImageProtocol,

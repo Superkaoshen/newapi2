@@ -55,7 +55,7 @@ func (s TaskSubmitState) IsPending() bool {
 }
 
 type Task struct {
-	ID         int64                 `json:"id" gorm:"primary_key;AUTO_INCREMENT"`
+	ID         int64                 `json:"id" gorm:"primary_key;AUTO_INCREMENT;index:idx_tasks_polling,priority:4;index:idx_tasks_submit_queue,priority:4;index:idx_tasks_submit_expired,priority:4;index:idx_tasks_timeout,priority:4"`
 	CreatedAt  int64                 `json:"created_at" gorm:"index"`
 	UpdatedAt  int64                 `json:"updated_at"`
 	TaskID     string                `json:"task_id" gorm:"type:varchar(191);index"` // 第三方id，不一定有/ song id\ Task id
@@ -64,15 +64,15 @@ type Task struct {
 	Group      string                `json:"group" gorm:"type:varchar(50)"` // 修正计费用
 	ChannelId  int                   `json:"channel_id" gorm:"index"`
 	Quota      int                   `json:"quota"`
-	Action     string                `json:"action" gorm:"type:varchar(40);index"` // 任务类型, song, lyrics, description-mode
-	Status     TaskStatus            `json:"status" gorm:"type:varchar(20);index"` // 任务状态
+	Action     string                `json:"action" gorm:"type:varchar(40);index"`                                                                                                                                                         // 任务类型, song, lyrics, description-mode
+	Status     TaskStatus            `json:"status" gorm:"type:varchar(20);index;index:idx_tasks_polling,priority:1;index:idx_tasks_submit_queue,priority:3;index:idx_tasks_submit_expired,priority:3;index:idx_tasks_timeout,priority:1"` // 任务状态
 	FailReason string                `json:"fail_reason"`
-	SubmitTime int64                 `json:"submit_time" gorm:"index"`
+	SubmitTime int64                 `json:"submit_time" gorm:"index;index:idx_tasks_timeout,priority:3"`
 	// SubmitState 仅表示本地队列到上游提交阶段的状态，不替代对外任务状态。
-	SubmitState     TaskSubmitState `json:"submit_state,omitempty" gorm:"type:varchar(20);index"`
+	SubmitState     TaskSubmitState `json:"submit_state,omitempty" gorm:"type:varchar(20);index;index:idx_tasks_polling,priority:2;index:idx_tasks_submit_queue,priority:1;index:idx_tasks_submit_expired,priority:1;index:idx_tasks_timeout,priority:2"`
 	SubmitAttempts  int             `json:"submit_attempts,omitempty"`
-	SubmitAfter     int64           `json:"submit_after,omitempty" gorm:"index"`
-	SubmitClaimedAt int64           `json:"submit_claimed_at,omitempty" gorm:"index"`
+	SubmitAfter     int64           `json:"submit_after,omitempty" gorm:"index;index:idx_tasks_submit_queue,priority:2"`
+	SubmitClaimedAt int64           `json:"submit_claimed_at,omitempty" gorm:"index;index:idx_tasks_submit_expired,priority:2"`
 	SubmitClaimedBy string          `json:"submit_claimed_by,omitempty" gorm:"type:varchar(64);index"`
 	StartTime       int64           `json:"start_time" gorm:"index"`
 	FinishTime      int64           `json:"finish_time" gorm:"index"`
@@ -327,10 +327,19 @@ func TaskGetAllTasks(startIdx int, num int, queryParams SyncTaskQueryParams) []*
 	return tasks
 }
 
+func unfinishedTaskStatuses() []TaskStatus {
+	return []TaskStatus{
+		TaskStatusNotStart,
+		TaskStatusSubmitted,
+		TaskStatusQueued,
+		TaskStatusInProgress,
+		TaskStatusUnknown,
+	}
+}
+
 func GetTimedOutUnfinishedTasks(cutoffUnix int64, limit int) []*Task {
 	var tasks []*Task
-	err := DB.Where("progress != ?", "100%").
-		Where("status NOT IN ?", []string{TaskStatusFailure, TaskStatusSuccess}).
+	err := DB.Where("status IN ?", unfinishedTaskStatuses()).
 		Where("(submit_state IS NULL OR submit_state = ? OR submit_state NOT IN ?)",
 			TaskSubmitStateNone, []TaskSubmitState{TaskSubmitStateQueued, TaskSubmitStateSubmitting}).
 		Where("submit_time < ?", cutoffUnix).
@@ -346,10 +355,7 @@ func GetTimedOutUnfinishedTasks(cutoffUnix int64, limit int) []*Task {
 func GetAllUnFinishSyncTasks(limit int) []*Task {
 	var tasks []*Task
 	var err error
-	// get all tasks progress is not 100%
-	err = DB.Where("progress != ?", "100%").
-		Where("status != ?", TaskStatusFailure).
-		Where("status != ?", TaskStatusSuccess).
+	err = DB.Where("status IN ?", unfinishedTaskStatuses()).
 		Where("(submit_state IS NULL OR submit_state = ? OR submit_state NOT IN ?)",
 			TaskSubmitStateNone, []TaskSubmitState{TaskSubmitStateQueued, TaskSubmitStateSubmitting}).
 		Limit(limit).Order("id").Find(&tasks).Error
@@ -362,7 +368,7 @@ func GetAllUnFinishSyncTasks(limit int) []*Task {
 func GetQueuedAsyncImageTasks(limit int, now int64) []*Task {
 	var tasks []*Task
 	err := DB.Where("submit_state = ? AND submit_after <= ?", TaskSubmitStateQueued, now).
-		Where("status NOT IN ?", []TaskStatus{TaskStatusFailure, TaskStatusSuccess}).
+		Where("status IN ?", unfinishedTaskStatuses()).
 		Order("submit_after, id").
 		Limit(limit).
 		Find(&tasks).Error
@@ -375,7 +381,7 @@ func GetQueuedAsyncImageTasks(limit int, now int64) []*Task {
 func GetExpiredSubmittingAsyncImageTasks(cutoff int64, limit int) []*Task {
 	var tasks []*Task
 	err := DB.Where("submit_state = ? AND submit_claimed_at < ?", TaskSubmitStateSubmitting, cutoff).
-		Where("status NOT IN ?", []TaskStatus{TaskStatusFailure, TaskStatusSuccess}).
+		Where("status IN ?", unfinishedTaskStatuses()).
 		Order("submit_claimed_at, id").
 		Limit(limit).
 		Find(&tasks).Error
@@ -406,7 +412,7 @@ func ResetExpiredSubmittingAsyncImageTasks(cutoff int64, limit int) error {
 func ClaimTaskForSubmit(id int64, workerID string, now int64) (bool, error) {
 	result := DB.Model(&Task{}).
 		Where("id = ? AND submit_state = ? AND submit_after <= ?", id, TaskSubmitStateQueued, now).
-		Where("status NOT IN ?", []TaskStatus{TaskStatusFailure, TaskStatusSuccess}).
+		Where("status IN ?", unfinishedTaskStatuses()).
 		Updates(map[string]any{
 			"submit_state":      TaskSubmitStateSubmitting,
 			"submit_claimed_at": now,

@@ -51,6 +51,8 @@ type asyncGeminiImageInfo struct {
 	Proxy        string
 }
 
+const geminiImageResumeInProgressAfter = 10 * time.Minute
+
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 	a.ChannelType = info.ChannelType
 	a.baseURL = info.ChannelBaseUrl
@@ -384,7 +386,9 @@ func TryResumeImageTask(task *model.Task, baseURL, apiKey, proxy string) bool {
 		return false
 	}
 	if task.Status == model.TaskStatusInProgress {
-		return false
+		if task.StartTime > 0 && time.Since(time.Unix(task.StartTime, 0)) < geminiImageResumeInProgressAfter {
+			return false
+		}
 	}
 	requestBody := strings.TrimSpace(task.PrivateData.RequestBody)
 	if requestBody == "" {
@@ -802,7 +806,7 @@ func saveGeminiImageURL(rawURL string) (string, error) {
 	if rawURL == "" {
 		return "", nil
 	}
-	return service.SaveImageURLToAliyunOSS(rawURL, "")
+	return service.StrictSaveImageURLToAliyunOSS(rawURL, "")
 }
 
 func isGeminiImageFileData(fileData *dto.GeminiFileData) bool {

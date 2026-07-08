@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -68,6 +69,21 @@ func TestAsyncImageSubmitSchedulerFallsBackWhenPriorityCircuitOpen(t *testing.T)
 	ch := scheduler.Next(time.Now())
 	if ch == nil || ch.Id != low.Id {
 		t.Fatalf("scheduler returned channel %#v, want low priority channel %d", ch, low.Id)
+	}
+}
+
+func TestShouldFailAsyncImageSubmitImmediately(t *testing.T) {
+	if !shouldFailAsyncImageSubmitImmediately(fmt.Errorf("image or reference_image_urls is required")) {
+		t.Fatal("imageone validation error should fail immediately")
+	}
+	if !shouldFailAsyncImageSubmitImmediately(fmt.Errorf("status 400: invalid request")) {
+		t.Fatal("4xx validation error should fail immediately")
+	}
+	if shouldFailAsyncImageSubmitImmediately(fmt.Errorf("status 429: rate limited")) {
+		t.Fatal("429 should remain retryable")
+	}
+	if shouldFailAsyncImageSubmitImmediately(fmt.Errorf("status 500: upstream error")) {
+		t.Fatal("5xx should remain retryable")
 	}
 }
 

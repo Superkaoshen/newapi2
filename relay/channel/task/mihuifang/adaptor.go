@@ -367,13 +367,16 @@ func normalizeImageOneSubmitStatus(status string) string {
 
 func isImageOneTaskResponse(respBody []byte) bool {
 	var probe struct {
-		Images json.RawMessage `json:"images,omitempty"`
-		Error  string          `json:"error,omitempty"`
+		TaskID  string          `json:"task_id,omitempty"`
+		ID      string          `json:"id,omitempty"`
+		Images  json.RawMessage `json:"images,omitempty"`
+		Error   string          `json:"error,omitempty"`
+		Message string          `json:"message,omitempty"`
 	}
 	if err := common.Unmarshal(respBody, &probe); err != nil {
 		return false
 	}
-	if len(probe.Images) > 0 || probe.Error != "" {
+	if probe.TaskID != "" || probe.ID != "" || len(probe.Images) > 0 || probe.Error != "" || probe.Message != "" {
 		return true
 	}
 	return false
@@ -387,11 +390,11 @@ func parseImageOneTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
 
 	ti := &relaycommon.TaskInfo{TaskID: firstNonEmpty(resp.TaskID, resp.ID)}
 	switch strings.ToLower(strings.TrimSpace(resp.Status)) {
-	case "pending":
+	case "created", "pending", "queued", "submitted":
 		ti.Status = model.TaskStatusQueued
-	case "processing":
+	case "processing", "in_progress", "running":
 		ti.Status = model.TaskStatusInProgress
-	case "completed":
+	case "completed", "succeeded", "success":
 		ti.Status = model.TaskStatusSuccess
 		ti.Progress = "100%"
 		publicResp, err := imageOneResponseToAIAPIPro(resp)
@@ -403,7 +406,7 @@ func parseImageOneTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
 		}
 		ti.Url = firstResultURL(publicResp.Result)
 		ti.Data = normalizeResponseData(publicResp)
-	case "failed":
+	case "failed", "failure", "timeout", "cancelled", "canceled":
 		ti.Status = model.TaskStatusFailure
 		ti.Progress = "100%"
 		ti.Reason = firstNonEmpty(resp.Error, resp.Message, "task failed")
@@ -492,13 +495,13 @@ func saveImageOneImagesToOSS(images []imageOneTaskImage) ([]string, error) {
 
 func imageOneStatusToPublicStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "pending":
+	case "created", "pending", "queued", "submitted":
 		return "created"
-	case "processing":
+	case "processing", "in_progress", "running":
 		return "processing"
-	case "completed":
+	case "completed", "succeeded", "success":
 		return "succeeded"
-	case "failed":
+	case "failed", "failure", "timeout", "cancelled", "canceled":
 		return "failed"
 	default:
 		return "processing"
@@ -507,11 +510,11 @@ func imageOneStatusToPublicStatus(status string) string {
 
 func imageOneProgress(status string) int {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "pending":
+	case "created", "pending", "queued", "submitted":
 		return 0
-	case "processing":
+	case "processing", "in_progress", "running":
 		return 50
-	case "completed", "failed":
+	case "completed", "succeeded", "success", "failed", "failure", "timeout", "cancelled", "canceled":
 		return 100
 	default:
 		return 0
@@ -1171,10 +1174,11 @@ func setString(m map[string]interface{}, key, value string) {
 
 func saveResultFilesToOSS(result map[string]interface{}, topURL string) ([]string, error) {
 	raw := collectResultURLs(result, topURL)
-	if len(raw) == 0 {
+	rawBase64 := collectResultBase64(result, topURL)
+	if len(raw) == 0 && len(rawBase64) == 0 {
 		return nil, fmt.Errorf("completed response contains no result url")
 	}
-	saved := make([]string, 0, len(raw))
+	saved := make([]string, 0, len(raw)+len(rawBase64))
 	for _, u := range raw {
 		ossURL, err := service.StrictSaveFileURLToAliyunOSS(u, "")
 		if err != nil {
@@ -1182,14 +1186,21 @@ func saveResultFilesToOSS(result map[string]interface{}, topURL string) ([]strin
 		}
 		saved = append(saved, ossURL)
 	}
-	return saved, nil
+	for _, data := range rawBase64 {
+		ossURL, err := saveBase64ResultToOSS(data)
+		if err != nil {
+			return nil, err
+		}
+		saved = append(saved, ossURL)
+	}
+	return uniqueNonEmptyStrings(saved), nil
 }
 
 func collectResultURLs(result map[string]interface{}, topURL string) []string {
 	urls := make([]string, 0)
 	add := func(v string) {
 		v = strings.TrimSpace(v)
-		if v != "" {
+		if v != "" && !strings.HasPrefix(strings.ToLower(v), "data:") {
 			urls = append(urls, v)
 		}
 	}
@@ -1226,6 +1237,71 @@ func collectResultURLs(result map[string]interface{}, topURL string) []string {
 	}
 	add(topURL)
 	return uniqueStrings(urls)
+}
+
+func collectResultBase64(result map[string]interface{}, topURL string) []string {
+	items := make([]string, 0)
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return
+		}
+		if strings.HasPrefix(strings.ToLower(v), "data:") || looksLikeBase64Image(v) {
+			items = append(items, v)
+		}
+	}
+	if result != nil {
+		for _, key := range []string{"b64_json", "base64", "data"} {
+			if v, ok := result[key].(string); ok {
+				add(v)
+			}
+		}
+		if values, ok := result["image_urls"].([]interface{}); ok {
+			for _, item := range values {
+				if s, ok := item.(string); ok {
+					add(s)
+				}
+			}
+		}
+		if itemsRaw, ok := result["items"].([]interface{}); ok {
+			for _, item := range itemsRaw {
+				itemMap, ok := item.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				for _, key := range []string{"b64_json", "base64", "data", "url"} {
+					if v, ok := itemMap[key].(string); ok {
+						add(v)
+					}
+				}
+			}
+		}
+	}
+	add(topURL)
+	return uniqueNonEmptyStrings(items)
+}
+
+func looksLikeBase64Image(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) < 64 || strings.Contains(value, "://") {
+		return false
+	}
+	return !strings.ContainsAny(value, " \n\r\t{}[]")
+}
+
+func saveBase64ResultToOSS(data string) (string, error) {
+	contentType, cleanBase64, err := service.DecodeBase64FileData(data)
+	if err != nil {
+		return "", err
+	}
+	ossURL, err := service.SaveBase64ImageToAliyunOSS(cleanBase64, contentType)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(ossURL) == "" {
+		return "", fmt.Errorf("aliyun oss is not enabled or configured")
+	}
+	return ossURL, nil
 }
 
 func applySavedImages(resp aiAPIProTaskResponse, saved []string) aiAPIProTaskResponse {

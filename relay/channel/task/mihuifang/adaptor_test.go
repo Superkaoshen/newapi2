@@ -77,6 +77,52 @@ func TestParseTaskResultReplacesResultImagesWithOSSURLs(t *testing.T) {
 	}
 }
 
+func TestParseTaskResultSavesBase64ResultToOSS(t *testing.T) {
+	oldOptions := snapshotOSSOptions()
+	defer restoreOSSOptions(oldOptions)
+
+	var uploaded int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		uploaded++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+	service.InitHttpClient()
+
+	setOSSOptions(map[string]string{
+		"AliyunOssEnabled":         "true",
+		"AliyunOssEndpoint":        ts.URL,
+		"AliyunOssBucket":          "127",
+		"AliyunOssAccessKeyId":     "id",
+		"AliyunOssAccessKeySecret": "secret",
+		"AliyunOssPathPrefix":      "async-images",
+		"AliyunOssPublicBaseUrl":   "https://cdn.example.com",
+	})
+
+	body := `{"requestId":"upstream","status":"succeeded","result":{"items":[{"b64_json":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=","type":"image"}]}}`
+	ti, err := (&TaskAdaptor{}).ParseTaskResult([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseTaskResult error = %v", err)
+	}
+	if ti.Status != model.TaskStatusSuccess {
+		t.Fatalf("status = %s, want %s, reason=%s", ti.Status, model.TaskStatusSuccess, ti.Reason)
+	}
+	if uploaded != 1 {
+		t.Fatalf("uploaded = %d, want 1", uploaded)
+	}
+	data := string(ti.Data)
+	if strings.Contains(data, "iVBOR") {
+		t.Fatalf("response data leaked base64: %s", data)
+	}
+	if !strings.Contains(data, "https://cdn.example.com/async-images/") {
+		t.Fatalf("response data does not contain OSS URL: %s", data)
+	}
+}
+
 func TestBuildRequestBodyAllowsMappedModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -875,6 +921,20 @@ func TestImageOneFetchTaskUsesStatusEndpoint(t *testing.T) {
 	_ = resp.Body.Close()
 	if gotPath != "/v1/status/abc123" {
 		t.Fatalf("path = %q, want /v1/status/abc123", gotPath)
+	}
+}
+
+func TestImageOneParseTaskResultUsesMessageAsFailureReason(t *testing.T) {
+	body := `{"task_id":"upstream","status":"failed","message":"bad reference image"}`
+	ti, err := (&TaskAdaptor{}).ParseTaskResult([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseTaskResult error = %v", err)
+	}
+	if ti.Status != model.TaskStatusFailure {
+		t.Fatalf("status = %s, want %s", ti.Status, model.TaskStatusFailure)
+	}
+	if ti.Reason != "bad reference image" {
+		t.Fatalf("reason = %q, want upstream message", ti.Reason)
 	}
 }
 

@@ -170,6 +170,11 @@ func processQueuedAsyncImageSubmitTask(ctx context.Context, workerID string, tas
 
 	result, info, submitErr := resubmitImageToChannel(ctx, task, req, modelName, ch)
 	if submitErr != nil {
+		if shouldFailAsyncImageSubmitImmediately(submitErr) {
+			logger.LogWarn(ctx, fmt.Sprintf("async image task %s submit to channel #%d failed permanently: %s", task.TaskID, ch.Id, submitErr.Error()))
+			failAsyncImageSubmitTask(ctx, task, fmt.Sprintf("channel #%d submit failed: %s", ch.Id, submitErr.Error()))
+			return
+		}
 		if shouldCircuitBreakAsyncImageSubmitError(submitErr) {
 			openAsyncImageSubmitCircuit(ch.Id, submitErr)
 		}
@@ -544,6 +549,33 @@ func shouldCircuitBreakAsyncImageSubmitError(err error) bool {
 	}
 	status := parseStatusCodeFromError(text)
 	return status == http.StatusTooManyRequests || status/100 == 5
+}
+
+func shouldFailAsyncImageSubmitImmediately(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	nonRetryable := []string{
+		"image or reference_image_urls is required",
+		"prompt field is required",
+		"model field is required",
+		"model price is required",
+		"unsupported quality",
+		"unsupported size",
+		"unsupported ratio",
+		"does not support ratio",
+		"supports at most",
+		"unmarshal_model_mapping_failed",
+		"model_mapping_contains_cycle",
+	}
+	for _, item := range nonRetryable {
+		if strings.Contains(text, item) {
+			return true
+		}
+	}
+	status := parseStatusCodeFromError(text)
+	return status >= http.StatusBadRequest && status < http.StatusInternalServerError && status != http.StatusTooManyRequests
 }
 
 func parseStatusCodeFromError(text string) int {

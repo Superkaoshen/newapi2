@@ -1,7 +1,9 @@
 package model
 
+import "github.com/QuantumNous/new-api/constant"
+
 type Midjourney struct {
-	Id          int    `json:"id"`
+	Id          int    `json:"id" gorm:"index:idx_midjourneys_polling,priority:3"`
 	Code        int    `json:"code"`
 	UserId      int    `json:"user_id" gorm:"index"`
 	Action      string `json:"action" gorm:"type:varchar(40);index"`
@@ -16,8 +18,8 @@ type Midjourney struct {
 	ImageUrl    string `json:"image_url"`
 	VideoUrl    string `json:"video_url"`
 	VideoUrls   string `json:"video_urls"`
-	Status      string `json:"status" gorm:"type:varchar(20);index"`
-	Progress    string `json:"progress" gorm:"type:varchar(30);index"`
+	Status      string `json:"status" gorm:"type:varchar(20);index;index:idx_midjourneys_polling,priority:1"`
+	Progress    string `json:"progress" gorm:"type:varchar(30);index;index:idx_midjourneys_polling,priority:2"`
 	FailReason  string `json:"fail_reason"`
 	ChannelId   int    `json:"channel_id"`
 	Quota       int    `json:"quota"`
@@ -93,12 +95,33 @@ func GetAllTasks(startIdx int, num int, queryParams TaskQueryParams) []*Midjourn
 func GetAllUnFinishTasks() []*Midjourney {
 	var tasks []*Midjourney
 	var err error
-	// get all tasks progress is not 100%
-	err = DB.Where("progress != ?", "100%").Find(&tasks).Error
+	limit := constant.TaskQueryLimit
+	if limit <= 0 {
+		limit = 1000
+	}
+	err = DB.Where("progress != ?", "100%").
+		Where("(status IS NULL OR status IN ?)", unfinishedMidjourneyStatuses()).
+		Order("id").
+		Limit(limit).
+		Find(&tasks).Error
 	if err != nil {
 		return nil
 	}
 	return tasks
+}
+
+func unfinishedMidjourneyStatuses() []string {
+	return []string{
+		"",
+		string(TaskStatusNotStart),
+		string(TaskStatusQueued),
+		string(TaskStatusSubmitted),
+		string(TaskStatusInProgress),
+		string(TaskStatusUnknown),
+		"PENDING",
+		"PROCESSING",
+		"QUEUED",
+	}
 }
 
 func GetByOnlyMJId(mjId string) *Midjourney {
