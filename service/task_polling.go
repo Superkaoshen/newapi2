@@ -126,8 +126,10 @@ func TaskPollingLoop() {
 			}
 			if len(nullTaskIds) > 0 {
 				err := model.TaskBulkUpdateByID(nullTaskIds, map[string]any{
-					"status":   "FAILURE",
-					"progress": "100%",
+					"status":      model.TaskStatusFailure,
+					"progress":    taskcommon.ProgressComplete,
+					"finish_time": time.Now().Unix(),
+					"fail_reason": "缺失上游任务 ID，无法继续轮询",
 				})
 				if err != nil {
 					logger.LogError(ctx, fmt.Sprintf("Fix null task_id task error: %v", err))
@@ -149,6 +151,11 @@ func collectTaskForPolling(ctx context.Context, task *model.Task, taskChannelM m
 	if task == nil {
 		return
 	}
+	if isMissingEncodedOperationTaskID(task) {
+		logger.LogWarn(ctx, fmt.Sprintf("skip unfinished task %s polling because upstream task ID is missing", task.TaskID))
+		*nullTaskIds = append(*nullTaskIds, task.ID)
+		return
+	}
 	upstreamID := task.GetUpstreamTaskID()
 	if upstreamID == "" {
 		// 统计失败的未完成任务
@@ -161,6 +168,26 @@ func collectTaskForPolling(ctx context.Context, task *model.Task, taskChannelM m
 	}
 	taskM[upstreamID] = task
 	taskChannelM[task.ChannelId] = append(taskChannelM[task.ChannelId], upstreamID)
+}
+
+func isMissingEncodedOperationTaskID(task *model.Task) bool {
+	if task == nil || strings.TrimSpace(task.PrivateData.UpstreamTaskID) != "" {
+		return false
+	}
+	if !isEncodedOperationTaskPlatform(task.Platform) {
+		return false
+	}
+	taskID := strings.TrimSpace(task.TaskID)
+	if taskID == "" {
+		return false
+	}
+	_, err := taskcommon.DecodeLocalTaskID(taskID)
+	return err != nil
+}
+
+func isEncodedOperationTaskPlatform(platform constant.TaskPlatform) bool {
+	return platform == constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeGemini)) ||
+		platform == constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeVertexAi))
 }
 
 func isLocalGeminiImageTask(task *model.Task) bool {

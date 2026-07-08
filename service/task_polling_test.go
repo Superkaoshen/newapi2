@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,4 +47,34 @@ func TestLocalGeminiImageTaskSkipsPollingWithMappedNanoBananaModel(t *testing.T)
 	}
 
 	require.True(t, isLocalGeminiImageTask(task))
+}
+
+func TestMissingEncodedOperationTaskIDForPublicGeminiTask(t *testing.T) {
+	task := &model.Task{
+		TaskID:   "task_jMOX539hnCFtJ1LDAwdODDCpCiQ3XkCP",
+		Platform: constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeGemini)),
+	}
+
+	require.True(t, isMissingEncodedOperationTaskID(task))
+}
+
+func TestMissingEncodedOperationTaskIDAllowsPersistedUpstreamID(t *testing.T) {
+	task := &model.Task{
+		TaskID:   "task_jMOX539hnCFtJ1LDAwdODDCpCiQ3XkCP",
+		Platform: constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeGemini)),
+		PrivateData: model.TaskPrivateData{
+			UpstreamTaskID: taskcommon.EncodeLocalTaskID("operations/abc"),
+		},
+	}
+
+	require.False(t, isMissingEncodedOperationTaskID(task))
+}
+
+func TestMissingEncodedOperationTaskIDAllowsLegacyEncodedTaskID(t *testing.T) {
+	task := &model.Task{
+		TaskID:   taskcommon.EncodeLocalTaskID("operations/abc"),
+		Platform: constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeVertexAi)),
+	}
+
+	require.False(t, isMissingEncodedOperationTaskID(task))
 }
