@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 /* eslint-disable react-refresh/only-export-components */
 import { useState, useMemo } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
-import { Music } from 'lucide-react'
+import { ImageIcon, Music } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatTimestampToDate } from '@/lib/format'
@@ -35,6 +35,7 @@ import {
   type AudioClip,
 } from '../dialogs/audio-preview-dialog'
 import { FailReasonDialog } from '../dialogs/fail-reason-dialog'
+import { ImageDialog } from '../dialogs/image-dialog'
 import { useUsageLogsContext } from '../usage-logs-provider'
 import {
   createDurationColumn,
@@ -42,17 +43,171 @@ import {
   createProgressColumn,
 } from './column-helpers'
 
-function parseTaskData(data: unknown): unknown[] {
-  if (Array.isArray(data)) return data
-  if (typeof data === 'string') {
-    try {
-      const parsed = JSON.parse(data)
-      return Array.isArray(parsed) ? parsed : []
-    } catch {
-      return []
-    }
+const IMAGE_TASK_PLATFORMS = new Set(['58'])
+const VIDEO_TASK_PLATFORMS = new Set([
+  'kling',
+  'runway',
+  'luma',
+  'viggle',
+  '50',
+  '51',
+  '52',
+  '54',
+  '55',
+])
+
+const TASK_PLATFORM_LABELS: Record<string, string> = {
+  '24': 'Gemini',
+  '50': 'Kling',
+  '51': 'Jimeng',
+  '52': 'Vidu',
+  '54': 'DoubaoVideo',
+  '55': 'Sora',
+  '58': 'Mihuifang',
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function trimString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function parseJSONValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  try {
+    return JSON.parse(value)
+  } catch {
+    return value
   }
-  return []
+}
+
+function parseTaskData(data: unknown): unknown[] {
+  const parsed = parseJSONValue(data)
+  return Array.isArray(parsed) ? parsed : []
+}
+
+function isLikelyImageURL(url: string): boolean {
+  return /\.(avif|bmp|gif|heic|heif|jpe?g|png|svg|tiff?|webp)(?:[?#].*)?$/i.test(
+    url
+  )
+}
+
+function isLikelyVideoURL(url: string): boolean {
+  return /\.(m3u8|m4v|mov|mp4|mpeg|mpg|webm)(?:[?#].*)?$/i.test(url)
+}
+
+function collectStringURLs(
+  value: unknown,
+  urls: string[],
+  shouldInclude: (url: string) => boolean = () => true
+) {
+  if (typeof value === 'string') {
+    const url = value.trim()
+    if (url.startsWith('http') && shouldInclude(url)) urls.push(url)
+  } else if (Array.isArray(value)) {
+    value.forEach((item) => collectStringURLs(item, urls, shouldInclude))
+  }
+}
+
+function collectImageURLsFromResult(result: unknown): string[] {
+  if (!isRecord(result)) return []
+  const urls: string[] = []
+
+  collectStringURLs(result.image_url, urls)
+  collectStringURLs(result.image_urls, urls)
+  collectStringURLs(result.url, urls, isLikelyImageURL)
+
+  if (Array.isArray(result.items)) {
+    result.items.forEach((item) => {
+      if (!isRecord(item)) return
+      const itemType = trimString(item.type).toLowerCase()
+      collectStringURLs(
+        item.url,
+        urls,
+        (url) => itemType === 'image' || isLikelyImageURL(url)
+      )
+    })
+  }
+
+  return urls.filter((url, index) => urls.indexOf(url) === index)
+}
+
+function collectImageURLsFromTaskData(data: unknown): string[] {
+  const parsed = parseJSONValue(data)
+  if (!isRecord(parsed)) return []
+
+  const urls = [
+    ...collectImageURLsFromResult(parsed.result),
+    ...collectImageURLsFromResult(parsed),
+  ]
+
+  return urls.filter((url, index) => urls.indexOf(url) === index)
+}
+
+function getTaskResultURL(log: TaskLog): string {
+  return trimString(log.result_url) || trimString(log.fail_reason)
+}
+
+function getTaskModelName(log: TaskLog): string {
+  const properties = parseJSONValue(log.properties)
+  if (!isRecord(properties)) return ''
+  return (
+    trimString(properties.origin_model_name) ||
+    trimString(properties.upstream_model_name) ||
+    trimString(properties.model)
+  )
+}
+
+function isImageTaskContext(log: TaskLog): boolean {
+  if (IMAGE_TASK_PLATFORMS.has(String(log.platform))) return true
+
+  const modelName = getTaskModelName(log).toLowerCase()
+  return (
+    modelName.includes('image') ||
+    modelName.includes('nano-banana') ||
+    modelName.includes('banana')
+  )
+}
+
+function getTaskImageURL(log: TaskLog): string {
+  const dataImageURL = collectImageURLsFromTaskData(log.data)[0]
+  if (dataImageURL) return dataImageURL
+
+  const resultURL = getTaskResultURL(log)
+  if (!resultURL) return ''
+  if (isLikelyImageURL(resultURL)) return resultURL
+  if (isImageTaskContext(log) && !isLikelyVideoURL(resultURL)) return resultURL
+  return ''
+}
+
+function isVideoTaskAction(action: string): boolean {
+  return (
+    action === TASK_ACTIONS.GENERATE ||
+    action === TASK_ACTIONS.TEXT_GENERATE ||
+    action === TASK_ACTIONS.FIRST_TAIL_GENERATE ||
+    action === TASK_ACTIONS.REFERENCE_GENERATE ||
+    action === TASK_ACTIONS.REMIX_GENERATE
+  )
+}
+
+function isVideoTaskContext(log: TaskLog): boolean {
+  if (!isVideoTaskAction(log.action)) return false
+  if (getTaskImageURL(log)) return false
+  if (VIDEO_TASK_PLATFORMS.has(String(log.platform))) return true
+
+  const resultURL = getTaskResultURL(log)
+  return isLikelyVideoURL(resultURL)
+}
+
+function getTaskActionLabel(log: TaskLog): string {
+  if (getTaskImageURL(log) || isImageTaskContext(log)) return 'Image Generation'
+  return taskActionMapper.getLabel(log.action)
+}
+
+function getTaskPlatformLabel(platform: string): string {
+  return TASK_PLATFORM_LABELS[platform] || platform
 }
 
 function AudioPreviewCell({ log }: { log: TaskLog }) {
@@ -84,6 +239,39 @@ function AudioPreviewCell({ log }: { log: TaskLog }) {
         open={open}
         onOpenChange={setOpen}
         clips={clips as AudioClip[]}
+      />
+    </>
+  )
+}
+
+function ImagePreviewCell({
+  imageUrl,
+  taskId,
+}: {
+  imageUrl: string
+  taskId: string
+}) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+
+  return (
+    <>
+      <button
+        type='button'
+        className='group flex items-center gap-1 text-left text-xs'
+        onClick={() => setOpen(true)}
+        title={t('Click to view image')}
+      >
+        <ImageIcon className='text-muted-foreground size-3' />
+        <span className='text-foreground leading-snug group-hover:underline'>
+          {t('Click to view image')}
+        </span>
+      </button>
+      <ImageDialog
+        imageUrl={imageUrl}
+        taskId={taskId}
+        open={open}
+        onOpenChange={setOpen}
       />
     </>
   )
@@ -187,7 +375,8 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
               className='border-border/60 bg-muted/30 max-w-full truncate rounded-md border px-1.5 py-0.5 font-mono'
             />
             <span className='text-muted-foreground/60 truncate text-[11px]'>
-              {t(log.platform)} · {t(taskActionMapper.getLabel(log.action))}
+              {t(getTaskPlatformLabel(log.platform))} ·{' '}
+              {t(getTaskActionLabel(log))}
             </span>
           </div>
         )
@@ -230,6 +419,7 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
         const failReason = row.getValue('fail_reason') as string
         const status = log.status
         const [dialogOpen, setDialogOpen] = useState(false)
+        const imageURL = getTaskImageURL(log)
 
         const isSunoSuccess =
           log.platform === 'suno' && status === TASK_STATUS.SUCCESS
@@ -247,16 +437,13 @@ export function useTaskLogsColumns(isAdmin: boolean): ColumnDef<TaskLog>[] {
           }
         }
 
-        const isVideoTask =
-          log.action === TASK_ACTIONS.GENERATE ||
-          log.action === TASK_ACTIONS.TEXT_GENERATE ||
-          log.action === TASK_ACTIONS.FIRST_TAIL_GENERATE ||
-          log.action === TASK_ACTIONS.REFERENCE_GENERATE ||
-          log.action === TASK_ACTIONS.REMIX_GENERATE
         const isSuccess = status === TASK_STATUS.SUCCESS
-        const isUrl = failReason?.startsWith('http')
 
-        if (isSuccess && isVideoTask && isUrl) {
+        if (isSuccess && imageURL) {
+          return <ImagePreviewCell imageUrl={imageURL} taskId={log.task_id} />
+        }
+
+        if (isSuccess && isVideoTaskContext(log)) {
           const videoUrl = `/v1/videos/${log.task_id}/content`
           return (
             <a
