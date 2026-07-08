@@ -70,6 +70,18 @@ func TestMissingEncodedOperationTaskIDAllowsPersistedUpstreamID(t *testing.T) {
 	require.False(t, isMissingEncodedOperationTaskID(task))
 }
 
+func TestMissingEncodedOperationTaskIDRejectsInvalidPersistedUpstreamID(t *testing.T) {
+	task := &model.Task{
+		TaskID:   "task_jMOX539hnCFtJ1LDAwdODDCpCiQ3XkCP",
+		Platform: constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeGemini)),
+		PrivateData: model.TaskPrivateData{
+			UpstreamTaskID: "task_jMOX539hnCFtJ1LDAwdODDCpCiQ3XkCP",
+		},
+	}
+
+	require.True(t, isMissingEncodedOperationTaskID(task))
+}
+
 func TestMissingEncodedOperationTaskIDAllowsLegacyEncodedTaskID(t *testing.T) {
 	task := &model.Task{
 		TaskID:   taskcommon.EncodeLocalTaskID("operations/abc"),

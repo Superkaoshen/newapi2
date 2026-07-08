@@ -91,6 +91,9 @@ func TestParseTaskResultSavesBase64ResultToOSS(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer ts.Close()
+	oldMaxFileDownloadMB := constant.MaxFileDownloadMB
+	constant.MaxFileDownloadMB = 1
+	defer func() { constant.MaxFileDownloadMB = oldMaxFileDownloadMB }()
 	service.InitHttpClient()
 
 	setOSSOptions(map[string]string{

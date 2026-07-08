@@ -299,9 +299,11 @@ func (a *TaskAdaptor) RunTaskAfterInsert(task *model.Task) {
 	body := append([]byte(nil), a.asyncImageBody...)
 	info := a.asyncImageInfo
 	if strings.TrimSpace(task.PrivateData.RequestBody) == "" {
-		snap := task.Snapshot()
 		task.PrivateData.RequestBody = base64.StdEncoding.EncodeToString(body)
-		if _, err := task.UpdateWithStatus(snap.Status); err != nil {
+		err := model.DB.Model(&model.Task{}).
+			Where("id = ? AND status = ?", task.ID, task.Status).
+			Update("private_data", task.PrivateData).Error
+		if err != nil {
 			logger.LogError(context.Background(), fmt.Sprintf("persist gemini image request body failed for task %s: %s", task.TaskID, err.Error()))
 		}
 	}
@@ -431,8 +433,13 @@ func runGeminiImageTask(ctx context.Context, taskID int64, requestBody []byte, i
 		}
 		snap := task.Snapshot()
 		applyGeminiImageTaskInfo(task, taskInfo, fallback)
-		if !snap.Equal(task.Snapshot()) {
-			won, updateErr := task.UpdateWithStatus(snap.Status)
+		isDone := task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure
+		clearPrivateData := isDone && task.HasTransientPrivateData()
+		if clearPrivateData {
+			task.ClearTransientPrivateData()
+		}
+		if !snap.Equal(task.Snapshot()) || clearPrivateData {
+			won, updateErr := task.UpdateWithSnapshot(snap, clearPrivateData)
 			if updateErr != nil {
 				logger.LogError(ctx, fmt.Sprintf("update gemini image task %s failed: %s", task.TaskID, updateErr.Error()))
 				return
@@ -484,7 +491,7 @@ func simulateGeminiImageProgress(ctx context.Context, taskID int64, done <-chan 
 			}
 			snap := task.Snapshot()
 			task.Progress = progress
-			won, err := task.UpdateWithStatus(snap.Status)
+			won, err := task.UpdateWithSnapshot(snap, false)
 			if err != nil {
 				logger.LogError(ctx, fmt.Sprintf("update gemini image task progress %s failed: %s", task.TaskID, err.Error()))
 				return

@@ -3,6 +3,7 @@ package taskcommon
 import (
 	"encoding/base64"
 	"fmt"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -58,6 +59,15 @@ func DecodeLocalTaskID(id string) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+func IsEncodedOperationTaskID(id string) bool {
+	name, err := DecodeLocalTaskID(strings.TrimSpace(id))
+	if err != nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	return strings.HasPrefix(name, "operations/") || strings.Contains(name, "/operations/")
 }
 
 // BuildProxyURL constructs the video proxy URL using the public task ID.

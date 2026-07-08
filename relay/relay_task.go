@@ -720,8 +720,13 @@ func tryUpdateAsyncImageTask(task *model.Task) error {
 
 	snap := task.Snapshot()
 	applyTaskInfoToAsyncImageTask(task, taskResult, body)
-	if !snap.Equal(task.Snapshot()) {
-		won, updateErr := task.UpdateWithStatus(snap.Status)
+	isDone := task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure
+	clearPrivateData := isDone && task.HasTransientPrivateData()
+	if clearPrivateData {
+		task.ClearTransientPrivateData()
+	}
+	if !snap.Equal(task.Snapshot()) || clearPrivateData {
+		won, updateErr := task.UpdateWithSnapshot(snap, clearPrivateData)
 		if updateErr != nil {
 			return updateErr
 		}
@@ -849,8 +854,13 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 		task.PrivateData.ResultURL = taskcommon.BuildProxyURL(task.TaskID)
 	}
 
-	if !snap.Equal(task.Snapshot()) {
-		_, _ = task.UpdateWithStatus(snap.Status)
+	isDone := task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure
+	clearPrivateData := isDone && task.HasTransientPrivateData()
+	if clearPrivateData {
+		task.ClearTransientPrivateData()
+	}
+	if !snap.Equal(task.Snapshot()) || clearPrivateData {
+		_, _ = task.UpdateWithSnapshot(snap, clearPrivateData)
 	}
 
 	// OpenAI Video API 由调用者的 ConvertToOpenAIVideo 分支处理

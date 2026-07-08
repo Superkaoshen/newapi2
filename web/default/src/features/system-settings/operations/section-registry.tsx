@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { SystemBehaviorSection } from '../general/system-behavior-section'
+import { AliyunOssSettingsSection } from '../integrations/aliyun-oss-settings-section'
 import { EmailSettingsSection } from '../integrations/email-settings-section'
 import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
 import { WorkerSettingsSection } from '../integrations/worker-settings-section'
@@ -90,6 +91,25 @@ const OPERATIONS_SECTIONS = [
           WorkerValidKey: settings.WorkerValidKey,
           WorkerAllowHttpImageRequestEnabled:
             settings.WorkerAllowHttpImageRequestEnabled,
+        }}
+      />
+    ),
+  },
+  {
+    id: 'aliyun-oss',
+    titleKey: 'Aliyun OSS',
+    build: (settings: OperationsSettings) => (
+      <AliyunOssSettingsSection
+        defaultValues={{
+          AliyunOssEnabled: settings.AliyunOssEnabled,
+          AliyunOssEndpoint: settings.AliyunOssEndpoint,
+          AliyunOssBucket: settings.AliyunOssBucket,
+          AliyunOssAccessKeyId: settings.AliyunOssAccessKeyId,
+          AliyunOssAccessKeySecret: settings.AliyunOssAccessKeySecret,
+          AliyunOssPathPrefix: settings.AliyunOssPathPrefix,
+          AliyunOssPublicBaseUrl: settings.AliyunOssPublicBaseUrl,
+          AliyunOssUploadTimeoutSeconds:
+            settings.AliyunOssUploadTimeoutSeconds,
         }}
       />
     ),

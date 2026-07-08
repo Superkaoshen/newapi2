@@ -81,6 +81,7 @@ func InitOptionMap() {
 	common.OptionMap["AliyunOssAccessKeySecret"] = ""
 	common.OptionMap["AliyunOssPathPrefix"] = "openai-images"
 	common.OptionMap["AliyunOssPublicBaseUrl"] = ""
+	common.OptionMap["AliyunOssUploadTimeoutSeconds"] = "30"
 	common.OptionMap["PayAddress"] = ""
 	common.OptionMap["CustomCallbackAddress"] = ""
 	common.OptionMap["EpayId"] = ""

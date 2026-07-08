@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base64"
@@ -28,6 +29,7 @@ type AliyunOssConfig struct {
 	AccessKeySecret string
 	PathPrefix      string
 	PublicBaseURL   string
+	UploadTimeout   int
 }
 
 var markdownImageURLRegex = regexp.MustCompile(`!\[[^\]]*]\(([^)\r\n]+)\)`)
@@ -44,6 +46,7 @@ func GetAliyunOssConfig() AliyunOssConfig {
 		AccessKeySecret: strings.TrimSpace(common.OptionMap["AliyunOssAccessKeySecret"]),
 		PathPrefix:      strings.TrimSpace(common.OptionMap["AliyunOssPathPrefix"]),
 		PublicBaseURL:   strings.TrimSpace(common.OptionMap["AliyunOssPublicBaseUrl"]),
+		UploadTimeout:   common.String2Int(strings.TrimSpace(common.OptionMap["AliyunOssUploadTimeoutSeconds"])),
 	}
 }
 
@@ -412,7 +415,16 @@ func uploadBytesToAliyunOSS(cfg AliyunOssConfig, objectKey string, data []byte, 
 	_, _ = mac.Write([]byte(stringToSign))
 	signature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
-	req, err := http.NewRequest(http.MethodPut, putURL, bytes.NewReader(data))
+	timeout := cfg.UploadTimeout
+	if timeout <= 0 {
+		timeout = 30
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	common.SysLog(fmt.Sprintf("uploading to aliyun oss: endpoint=%s, bucket=%s, key=%s, size=%d, timeout=%ds", common.MaskSensitiveInfo(uploadBaseURL), cfg.Bucket, objectKey, len(data), timeout))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, putURL, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}

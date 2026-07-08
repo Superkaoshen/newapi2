@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay"
 	"github.com/QuantumNous/new-api/relay/channel"
+	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
@@ -73,14 +74,30 @@ func updateVideoSingleTask(ctx context.Context, adaptor channel.TaskAdaptor, cha
 		logger.LogError(ctx, fmt.Sprintf("Task %s not found in taskM", taskId))
 		return fmt.Errorf("task %s not found", taskId)
 	}
+	snap := task.Snapshot()
 	key := channel.Key
 
 	privateData := task.PrivateData
 	if privateData.Key != "" {
 		key = privateData.Key
 	}
+	upstreamID := task.GetUpstreamTaskID()
+	if requiresEncodedOperationTaskID(channel.Type) && !taskcommon.IsEncodedOperationTaskID(upstreamID) {
+		task.Status = model.TaskStatusFailure
+		task.Progress = "100%"
+		task.FinishTime = time.Now().Unix()
+		task.FailReason = "缺失有效的上游任务 ID，无法继续轮询"
+		clearPrivateData := task.HasTransientPrivateData()
+		if clearPrivateData {
+			task.ClearTransientPrivateData()
+		}
+		if _, err := task.UpdateWithSnapshot(snap, clearPrivateData); err != nil {
+			logger.LogError(ctx, fmt.Sprintf("Failed to mark invalid video task %s failed: %s", task.TaskID, err.Error()))
+		}
+		return fmt.Errorf("invalid upstream task id for task %s", task.TaskID)
+	}
 	resp, err := adaptor.FetchTask(baseURL, key, map[string]any{
-		"task_id": taskId,
+		"task_id": upstreamID,
 		"action":  task.Action,
 	}, proxy)
 	if err != nil {
@@ -260,7 +277,12 @@ func updateVideoSingleTask(ctx context.Context, adaptor channel.TaskAdaptor, cha
 	if taskResult.Progress != "" {
 		task.Progress = taskResult.Progress
 	}
-	if err := task.Update(); err != nil {
+	isDone := task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure
+	clearPrivateData := isDone && task.HasTransientPrivateData()
+	if clearPrivateData {
+		task.ClearTransientPrivateData()
+	}
+	if _, err := task.UpdateWithSnapshot(snap, clearPrivateData); err != nil {
 		common.SysLog("UpdateVideoTask task error: " + err.Error())
 		shouldRefund = false
 	}
@@ -275,6 +297,10 @@ func updateVideoSingleTask(ctx context.Context, adaptor channel.TaskAdaptor, cha
 	}
 
 	return nil
+}
+
+func requiresEncodedOperationTaskID(channelType int) bool {
+	return channelType == constant.ChannelTypeGemini || channelType == constant.ChannelTypeVertexAi
 }
 
 func redactVideoResponseBody(body []byte) []byte {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql/driver"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -481,6 +482,7 @@ type taskSnapshot struct {
 	FinishTime int64
 	FailReason string
 	ResultURL  string
+	Quota      int
 	Data       json.RawMessage
 }
 
@@ -491,7 +493,58 @@ func (s taskSnapshot) Equal(other taskSnapshot) bool {
 		s.FinishTime == other.FinishTime &&
 		s.FailReason == other.FailReason &&
 		s.ResultURL == other.ResultURL &&
+		s.Quota == other.Quota &&
 		bytes.Equal(s.Data, other.Data)
+}
+
+func (t *Task) ClearTransientPrivateData() {
+	t.PrivateData.RequestBody = ""
+	t.PrivateData.OriginalRequest = ""
+	t.PrivateData.LastFailureReason = ""
+}
+
+func (t *Task) HasTransientPrivateData() bool {
+	return strings.TrimSpace(t.PrivateData.RequestBody) != "" ||
+		strings.TrimSpace(t.PrivateData.OriginalRequest) != "" ||
+		strings.TrimSpace(t.PrivateData.LastFailureReason) != ""
+}
+
+func (t *Task) UpdateWithSnapshot(before taskSnapshot, includePrivateData bool) (bool, error) {
+	updates := make(map[string]any)
+	if before.Status != t.Status {
+		updates["status"] = t.Status
+	}
+	if before.Progress != t.Progress {
+		updates["progress"] = t.Progress
+	}
+	if before.StartTime != t.StartTime {
+		updates["start_time"] = t.StartTime
+	}
+	if before.FinishTime != t.FinishTime {
+		updates["finish_time"] = t.FinishTime
+	}
+	if before.FailReason != t.FailReason {
+		updates["fail_reason"] = t.FailReason
+	}
+	if before.Quota != t.Quota {
+		updates["quota"] = t.Quota
+	}
+	if !bytes.Equal(before.Data, t.Data) {
+		updates["data"] = t.Data
+	}
+	if includePrivateData || before.ResultURL != t.PrivateData.ResultURL {
+		updates["private_data"] = t.PrivateData
+	}
+	if len(updates) == 0 {
+		return true, nil
+	}
+	result := DB.Model(&Task{}).
+		Where("id = ? AND status = ?", t.ID, before.Status).
+		Updates(updates)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
 }
 
 func (t *Task) Snapshot() taskSnapshot {
@@ -502,6 +555,7 @@ func (t *Task) Snapshot() taskSnapshot {
 		FinishTime: t.FinishTime,
 		FailReason: t.FailReason,
 		ResultURL:  t.PrivateData.ResultURL,
+		Quota:      t.Quota,
 		Data:       t.Data,
 	}
 }

@@ -69,7 +69,7 @@ func sweepTimedOutTasks(ctx context.Context) {
 	for _, task := range tasks {
 		isLegacy := task.SubmitTime > 0 && task.SubmitTime < legacyTaskCutoff
 
-		oldStatus := task.Status
+		snap := task.Snapshot()
 		task.Status = model.TaskStatusFailure
 		task.Progress = "100%"
 		task.FinishTime = now
@@ -78,8 +78,12 @@ func sweepTimedOutTasks(ctx context.Context) {
 		} else {
 			task.FailReason = reason
 		}
+		clearPrivateData := task.HasTransientPrivateData()
+		if clearPrivateData {
+			task.ClearTransientPrivateData()
+		}
 
-		won, err := task.UpdateWithStatus(oldStatus)
+		won, err := task.UpdateWithSnapshot(snap, clearPrivateData)
 		if err != nil {
 			logger.LogError(ctx, fmt.Sprintf("sweepTimedOutTasks CAS update error for task %s: %v", task.TaskID, err))
 			continue
@@ -171,18 +175,17 @@ func collectTaskForPolling(ctx context.Context, task *model.Task, taskChannelM m
 }
 
 func isMissingEncodedOperationTaskID(task *model.Task) bool {
-	if task == nil || strings.TrimSpace(task.PrivateData.UpstreamTaskID) != "" {
+	if task == nil {
 		return false
 	}
 	if !isEncodedOperationTaskPlatform(task.Platform) {
 		return false
 	}
-	taskID := strings.TrimSpace(task.TaskID)
-	if taskID == "" {
+	upstreamID := strings.TrimSpace(task.GetUpstreamTaskID())
+	if upstreamID == "" {
 		return false
 	}
-	_, err := taskcommon.DecodeLocalTaskID(taskID)
-	return err != nil
+	return !taskcommon.IsEncodedOperationTaskID(upstreamID)
 }
 
 func isEncodedOperationTaskPlatform(platform constant.TaskPlatform) bool {
@@ -547,8 +550,12 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 
 	isDone := task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure
+	clearPrivateData := isDone && task.HasTransientPrivateData()
+	if clearPrivateData {
+		task.ClearTransientPrivateData()
+	}
 	if isDone && snap.Status != task.Status {
-		won, err := task.UpdateWithStatus(snap.Status)
+		won, err := task.UpdateWithSnapshot(snap, clearPrivateData)
 		if err != nil {
 			logger.LogError(ctx, fmt.Sprintf("UpdateWithStatus failed for task %s: %s", task.TaskID, err.Error()))
 			shouldRefund = false
@@ -558,8 +565,8 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 			shouldRefund = false
 			shouldSettle = false
 		}
-	} else if !snap.Equal(task.Snapshot()) {
-		if _, err := task.UpdateWithStatus(snap.Status); err != nil {
+	} else if !snap.Equal(task.Snapshot()) || clearPrivateData {
+		if _, err := task.UpdateWithSnapshot(snap, clearPrivateData); err != nil {
 			logger.LogError(ctx, fmt.Sprintf("Failed to update task %s: %s", task.TaskID, err.Error()))
 		}
 	} else {
