@@ -123,7 +123,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		return
 	}
 	if relayFormat == types.RelayFormatOpenAIImage &&
-		common.GetContextKeyInt(c, constant.ContextKeyChannelType) == constant.ChannelTypeMihuifang &&
+		(common.GetContextKeyInt(c, constant.ContextKeyChannelType) == constant.ChannelTypeMihuifang ||
+			common.GetContextKeyInt(c, constant.ContextKeyChannelType) == constant.ChannelTypeFirefly) &&
 		(relayInfo.RelayMode == relayconstant.RelayModeImagesGenerations ||
 			relayInfo.RelayMode == relayconstant.RelayModeImagesEdits) {
 		RelayTask(c)

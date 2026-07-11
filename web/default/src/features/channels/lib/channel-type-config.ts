@@ -145,6 +145,17 @@ export const CHANNEL_TYPE_CONFIGS: Record<number, ChannelTypeConfig> = {
       baseUrl: 'Default: https://aiapipro.vip',
     },
   },
+  59: {
+    id: 59,
+    name: CHANNEL_TYPES[59],
+    icon: 'openai',
+    defaultBaseUrl: 'http://127.0.0.1:6001',
+    hints: {
+      key: 'Mihuifang API Key',
+      models: 'gpt-image-2,nanobanana,nanobanana2,nanobananapro',
+      baseUrl: 'Default: http://127.0.0.1:6001',
+    },
+  },
 }
 
 /**

@@ -26,6 +26,7 @@ const (
 	asyncImageSubmitWindowSize      = 10
 	asyncImageSubmitInterval        = 2 * time.Second
 	asyncImageSubmitClaimTimeout    = 2 * time.Minute
+	asyncImageFireflySubmitTimeout  = 90 * time.Second
 	asyncImageSubmitCircuitDuration = 45 * time.Second
 	asyncImageSubmitMaxAttempts     = 10
 )
@@ -168,8 +169,22 @@ func processQueuedAsyncImageSubmitTask(ctx context.Context, workerID string, tas
 		req.Model = modelName
 	}
 
-	result, info, submitErr := resubmitImageToChannel(ctx, task, req, modelName, ch)
+	submitCtx, cancelSubmit := asyncImageSubmitContext(ctx, ch.Type)
+	defer cancelSubmit()
+	result, info, submitErr := resubmitImageToChannel(submitCtx, task, req, modelName, ch)
 	if submitErr != nil {
+		if isFireflySubmitDeadlineExceeded(submitCtx, ch.Type) {
+			reason := fmt.Sprintf("channel #%d submit timed out after %s", ch.Id, asyncImageFireflySubmitTimeout)
+			logger.LogWarn(ctx, fmt.Sprintf("async image task %s failed permanently: %s", task.TaskID, reason))
+			failAsyncImageSubmitTask(ctx, task, reason)
+			return
+		}
+		if ch.Type == constant.ChannelTypeFirefly && isFireflyLocalStorageFailure(submitErr) {
+			reason := fmt.Sprintf("channel #%d submit failed: %s", ch.Id, submitErr.Error())
+			logger.LogWarn(ctx, fmt.Sprintf("async image task %s failed permanently: %s", task.TaskID, reason))
+			failAsyncImageSubmitTask(ctx, task, reason)
+			return
+		}
 		if shouldFailAsyncImageSubmitImmediately(submitErr) {
 			logger.LogWarn(ctx, fmt.Sprintf("async image task %s submit to channel #%d failed permanently: %s", task.TaskID, ch.Id, submitErr.Error()))
 			failAsyncImageSubmitTask(ctx, task, fmt.Sprintf("channel #%d submit failed: %s", ch.Id, submitErr.Error()))
@@ -186,6 +201,7 @@ func processQueuedAsyncImageSubmitTask(ctx context.Context, workerID string, tas
 	tried := taskTriedChannelSet(task)
 	tried[ch.Id] = struct{}{}
 	fromStatus := task.Status
+	reconcileAsyncImageSubmitBilling(ctx, task, result, info)
 	applyAsyncImageSubmitResult(task, result, info, ch, tried)
 	won, err = task.UpdateWithStatus(fromStatus)
 	if err != nil {
@@ -200,6 +216,24 @@ func processQueuedAsyncImageSubmitTask(ctx context.Context, workerID string, tas
 	}
 	RunTaskAfterInsert(result, task)
 	logger.LogInfo(ctx, fmt.Sprintf("async image task %s submitted to channel #%d", task.TaskID, ch.Id))
+}
+
+func reconcileAsyncImageSubmitBilling(ctx context.Context, task *model.Task, result *TaskSubmitResult, info *relaycommon.RelayInfo) {
+	if task == nil || result == nil || info == nil {
+		return
+	}
+	task.Properties.OriginModelName = info.OriginModelName
+	task.Properties.UpstreamModelName = info.UpstreamModelName
+	task.PrivateData.BillingContext = taskBillingContext(info)
+	if result.Quota == task.Quota {
+		return
+	}
+	if result.Quota == 0 {
+		service.RefundTaskQuota(ctx, task, "actual image channel is free")
+		task.Quota = 0
+		return
+	}
+	service.RecalculateTaskQuota(ctx, task, result.Quota, "actual image channel pricing")
 }
 
 func requeueAsyncImageSubmitTasks(ctx context.Context, workerID string, tasks []*model.Task, reason string) {
@@ -243,6 +277,30 @@ func applyAsyncImageSubmitResult(task *model.Task, result *TaskSubmitResult, rel
 	if result.InitialTaskInfo != nil {
 		ApplyTaskInfoToTask(task, result.InitialTaskInfo, result.TaskData)
 	}
+	clearTerminalFireflyTaskKey(task, ch.Type)
+}
+
+func asyncImageSubmitContext(parent context.Context, channelType int) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if channelType != constant.ChannelTypeFirefly {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, asyncImageFireflySubmitTimeout)
+}
+
+func isFireflySubmitDeadlineExceeded(ctx context.Context, channelType int) bool {
+	return channelType == constant.ChannelTypeFirefly && ctx != nil && ctx.Err() == context.DeadlineExceeded
+}
+
+func isFireflyLocalStorageFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "save result image failed") ||
+		strings.Contains(text, "object storage returned no image url")
 }
 
 func requeueOrFailAsyncImageSubmitTask(ctx context.Context, task *model.Task, reason string) {
@@ -354,7 +412,7 @@ func filterAsyncImageSubmitChannels(channels []*model.Channel, modelName string)
 		if ch == nil {
 			continue
 		}
-		if ch.Type == constant.ChannelTypeMihuifang || ch.Type == constant.ChannelTypeGemini {
+		if ch.Type == constant.ChannelTypeMihuifang || ch.Type == constant.ChannelTypeFirefly || ch.Type == constant.ChannelTypeGemini {
 			result = append(result, ch)
 		}
 	}

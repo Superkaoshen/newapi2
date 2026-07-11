@@ -138,7 +138,7 @@ func taskOriginalRequest(task *model.Task) (relaycommon.TaskSubmitReq, error) {
 
 func supportsAsyncImageFailoverChannel(channelType int) bool {
 	switch channelType {
-	case constant.ChannelTypeMihuifang, constant.ChannelTypeGemini:
+	case constant.ChannelTypeMihuifang, constant.ChannelTypeFirefly, constant.ChannelTypeGemini:
 		return true
 	default:
 		return false
@@ -155,6 +155,13 @@ func supportsImageFailoverChannel(ch *model.Channel, modelName string) bool {
 }
 
 func supportsSyncImageFailoverChannel(channelType int, modelName string) bool {
+	// Firefly exposes image generation through the task adaptor's
+	// /v1/chat/completions bridge only. Falling back to the generic OpenAI image
+	// adaptor would issue an unsupported /v1/images/generations request and can
+	// replace the original, sanitized error with the raw fallback response.
+	if channelType == constant.ChannelTypeFirefly {
+		return false
+	}
 	if _, ok := common.ChannelType2APIType(channelType); !ok {
 		return false
 	}
@@ -198,7 +205,7 @@ func resubmitImageToChannel(ctx context.Context, task *model.Task, req relaycomm
 }
 
 func resubmitAsyncImageToChannel(ctx context.Context, task *model.Task, req relaycommon.TaskSubmitReq, modelName string, ch *model.Channel) (*TaskSubmitResult, *relaycommon.RelayInfo, error) {
-	c, err := newAsyncImageFailoverContext(task, req, modelName)
+	c, err := newAsyncImageFailoverContext(ctx, task, req, modelName)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -244,6 +251,9 @@ func resubmitAsyncImageToChannel(ctx context.Context, task *model.Task, req rela
 			return nil, nil, err
 		}
 	}
+	if err = calculateTaskSubmissionPrice(c, info, adaptor, modelName); err != nil {
+		return nil, nil, err
+	}
 
 	requestBody, err := adaptor.BuildRequestBody(c, info)
 	if err != nil {
@@ -277,7 +287,7 @@ func resubmitAsyncImageToChannel(ctx context.Context, task *model.Task, req rela
 		UpstreamTaskID:   upstreamTaskID,
 		TaskData:         taskData,
 		Platform:         platform,
-		Quota:            task.Quota,
+		Quota:            info.PriceData.Quota,
 		ImageProtocol:    relayImageProtocol(info),
 		InitialTaskInfo:  initialTaskInfo,
 		postInsertRunner: postInsertRunner,
@@ -395,12 +405,15 @@ func buildSyncImageFailoverRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	return bytes.NewReader(jsonData), nil
 }
 
-func newAsyncImageFailoverContext(task *model.Task, req relaycommon.TaskSubmitReq, modelName string) (*gin.Context, error) {
+func newAsyncImageFailoverContext(ctx context.Context, task *model.Task, req relaycommon.TaskSubmitReq, modelName string) (*gin.Context, error) {
 	body, err := common.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
 	httpReq := httptest.NewRequest(http.MethodPost, "/v1/async/generations", bytes.NewReader(body))
+	if ctx != nil {
+		httpReq = httpReq.WithContext(ctx)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -473,6 +486,16 @@ func applyAsyncImageResubmitResult(task *model.Task, result *TaskSubmitResult, i
 	task.PrivateData.LastFailureReason = strings.TrimSpace(reason)
 	if result.InitialTaskInfo != nil {
 		ApplyTaskInfoToTask(task, result.InitialTaskInfo, result.TaskData)
+	}
+	clearTerminalFireflyTaskKey(task, ch.Type)
+}
+
+func clearTerminalFireflyTaskKey(task *model.Task, channelType int) {
+	if task == nil || channelType != constant.ChannelTypeFirefly {
+		return
+	}
+	if task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure {
+		task.PrivateData.Key = ""
 	}
 }
 

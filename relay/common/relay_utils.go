@@ -223,10 +223,14 @@ func isKnownTaskField(field string) bool {
 		"reference_image_urls": true,
 		"size":                 true,
 		"quality":              true,
+		"response_format":      true,
+		"mask":                 true,
+		"output_psd":           true,
 		"aspect_ratio":         true,
 		"resolution":           true,
 		"n":                    true,
 		"duration":             true,
+		"seconds":              true,
 		"input_reference":      true, // Sora 特有字段
 	}
 	return knownFields[field]

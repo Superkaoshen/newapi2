@@ -18,7 +18,15 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React from 'react';
-import { Progress, Tag, Tooltip, Typography } from '@douyinfe/semi-ui';
+import {
+  Avatar,
+  ImagePreview,
+  Progress,
+  Space,
+  Tag,
+  Tooltip,
+  Typography,
+} from '@douyinfe/semi-ui';
 import {
   Music,
   FileText,
@@ -43,7 +51,6 @@ import {
 } from '../../../constants/common.constant';
 import { CHANNEL_OPTIONS } from '../../../constants/channel.constants';
 import { stringToColor } from '../../../helpers/render';
-import { Avatar, Space } from '@douyinfe/semi-ui';
 
 const colors = [
   'amber',
@@ -62,6 +69,8 @@ const colors = [
   'violet',
   'yellow',
 ];
+
+const IMAGE_TASK_PLATFORMS = new Set(['58', '59']);
 
 // Render functions
 const renderTimestamp = (timestampInSeconds) => {
@@ -90,7 +99,8 @@ function renderDuration(submit_time, finishTime) {
   );
 }
 
-const renderType = (type, t) => {
+const renderType = (type, t, platform) => {
+  const isImageTask = IMAGE_TASK_PLATFORMS.has(String(platform));
   switch (type) {
     case 'MUSIC':
       return (
@@ -107,13 +117,13 @@ const renderType = (type, t) => {
     case TASK_ACTION_GENERATE:
       return (
         <Tag color='blue' shape='circle' prefixIcon={<Sparkles size={14} />}>
-          {t('图生视频')}
+          {isImageTask ? t('图生图') : t('图生视频')}
         </Tag>
       );
     case TASK_ACTION_TEXT_GENERATE:
       return (
         <Tag color='blue' shape='circle' prefixIcon={<Sparkles size={14} />}>
-          {t('文生视频')}
+          {isImageTask ? t('文生图') : t('文生视频')}
         </Tag>
       );
     case TASK_ACTION_FIRST_TAIL_GENERATE:
@@ -144,6 +154,13 @@ const renderType = (type, t) => {
 };
 
 const renderPlatform = (platform, t) => {
+  if (IMAGE_TASK_PLATFORMS.has(String(platform))) {
+    return (
+      <Tag color='blue' shape='circle'>
+        Mihuifang
+      </Tag>
+    );
+  }
   let option = CHANNEL_OPTIONS.find(
     (opt) => String(opt.value) === String(platform),
   );
@@ -168,6 +185,29 @@ const renderPlatform = (platform, t) => {
         </Tag>
       );
   }
+};
+
+const TaskImagePreview = ({ url, t }) => {
+  const [visible, setVisible] = React.useState(false);
+
+  return (
+    <>
+      <a
+        href={url}
+        onClick={(event) => {
+          event.preventDefault();
+          setVisible(true);
+        }}
+      >
+        {t('查看图片')}
+      </a>
+      <ImagePreview
+        src={url}
+        visible={visible}
+        onVisibleChange={setVisible}
+      />
+    </>
+  );
 };
 
 const renderStatus = (type, t) => {
@@ -327,7 +367,7 @@ export const getTaskLogsColumns = ({
       title: t('类型'),
       dataIndex: 'action',
       render: (text, record, index) => {
-        return <div>{renderType(text, t)}</div>;
+        return <div>{renderType(text, t, record.platform)}</div>;
       },
     },
     {
@@ -407,16 +447,22 @@ export const getTaskLogsColumns = ({
           );
         }
 
-        // 视频预览：优先使用 result_url，兼容旧数据 fail_reason 中的 URL
+        // 图片/视频预览：优先使用 result_url，兼容旧数据 fail_reason 中的 URL
+        const isImageTask = IMAGE_TASK_PLATFORMS.has(String(record.platform));
         const isVideoTask =
-          record.action === TASK_ACTION_GENERATE ||
-          record.action === TASK_ACTION_TEXT_GENERATE ||
-          record.action === TASK_ACTION_FIRST_TAIL_GENERATE ||
-          record.action === TASK_ACTION_REFERENCE_GENERATE ||
-          record.action === TASK_ACTION_REMIX_GENERATE;
+          !isImageTask &&
+          (record.action === TASK_ACTION_GENERATE ||
+            record.action === TASK_ACTION_TEXT_GENERATE ||
+            record.action === TASK_ACTION_FIRST_TAIL_GENERATE ||
+            record.action === TASK_ACTION_REFERENCE_GENERATE ||
+            record.action === TASK_ACTION_REMIX_GENERATE);
         const isSuccess = record.status === 'SUCCESS';
         const resultUrl = record.result_url;
-        const hasResultUrl = typeof resultUrl === 'string' && /^https?:\/\//.test(resultUrl);
+        const hasResultUrl =
+          typeof resultUrl === 'string' && /^https?:\/\//.test(resultUrl);
+        if (isSuccess && isImageTask && hasResultUrl) {
+          return <TaskImagePreview url={resultUrl} t={t} />;
+        }
         if (isSuccess && isVideoTask && hasResultUrl) {
           return (
             <a

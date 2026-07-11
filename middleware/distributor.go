@@ -29,7 +29,31 @@ type ModelRequest struct {
 	Group string `json:"group,omitempty"`
 }
 
+type distributorDependencies struct {
+	getChannelByID                  func(int, bool) (*model.Channel, error)
+	getCachedChannel                func(int) (*model.Channel, error)
+	getPreferredChannelByAffinity   func(*gin.Context, string, string) (int, bool)
+	isChannelEnabledForGroupModel   func(string, string, int) bool
+	getRandomSatisfiedChannel       func(*service.RetryParam) (*model.Channel, string, error)
+	getEnabledChannelsForGroupModel func(string, string) ([]*model.Channel, error)
+}
+
+func defaultDistributorDependencies() distributorDependencies {
+	return distributorDependencies{
+		getChannelByID:                  model.GetChannelById,
+		getCachedChannel:                model.CacheGetChannel,
+		getPreferredChannelByAffinity:   service.GetPreferredChannelByAffinity,
+		isChannelEnabledForGroupModel:   model.IsChannelEnabledForGroupModel,
+		getRandomSatisfiedChannel:       service.CacheGetRandomSatisfiedChannel,
+		getEnabledChannelsForGroupModel: model.GetEnabledChannelsForGroupModel,
+	}
+}
+
 func Distribute() func(c *gin.Context) {
+	return distribute(defaultDistributorDependencies())
+}
+
+func distribute(deps distributorDependencies) func(c *gin.Context) {
 	return func(c *gin.Context) {
 		var channel *model.Channel
 		channelId, ok := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId)
@@ -44,13 +68,17 @@ func Distribute() func(c *gin.Context) {
 				abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidChannelId))
 				return
 			}
-			channel, err = model.GetChannelById(id, true)
+			channel, err = deps.getChannelByID(id, true)
 			if err != nil {
 				abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidChannelId))
 				return
 			}
 			if channel.Status != common.ChannelStatusEnabled {
 				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
+				return
+			}
+			if !channelSupportsRequestEndpoint(c, channel) {
+				abortWithOpenAiMessage(c, http.StatusBadRequest, "the specified channel does not support this request endpoint")
 				return
 			}
 		} else {
@@ -101,19 +129,22 @@ func Distribute() func(c *gin.Context) {
 					}
 				}
 
-				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
-					preferred, err := model.CacheGetChannel(preferredChannelID)
+				if preferredChannelID, found := deps.getPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
+					preferred, err := deps.getCachedChannel(preferredChannelID)
 					if err == nil && preferred != nil {
 						if preferred.Status != common.ChannelStatusEnabled {
 							if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 								abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorAffinityChannelDisabled))
 								return
 							}
+						} else if !channelSupportsRequestEndpoint(c, preferred) {
+							// Ignore stale affinity entries that point to a channel which cannot
+							// serve the current endpoint, then continue with normal selection.
 						} else if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							autoGroups := service.GetUserAutoGroup(userGroup)
 							for _, g := range autoGroups {
-								if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
+								if deps.isChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
 									selectGroup = g
 									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
 									channel = preferred
@@ -121,7 +152,7 @@ func Distribute() func(c *gin.Context) {
 									break
 								}
 							}
-						} else if model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
+						} else if deps.isChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
 							channel = preferred
 							selectGroup = usingGroup
 							service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
@@ -130,7 +161,7 @@ func Distribute() func(c *gin.Context) {
 				}
 
 				if channel == nil {
-					channel, selectGroup, err = service.CacheGetRandomSatisfiedChannel(&service.RetryParam{
+					channel, selectGroup, err = getEndpointCompatibleRandomChannel(c, deps, &service.RetryParam{
 						Ctx:        c,
 						ModelName:  modelRequest.Model,
 						TokenGroup: usingGroup,
@@ -157,12 +188,68 @@ func Distribute() func(c *gin.Context) {
 				}
 			}
 		}
+		if channel != nil && !channelSupportsRequestEndpoint(c, channel) {
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "no available channel supports this request endpoint", types.ErrorCodeModelNotFound)
+			return
+		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 		c.Next()
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)
 		}
+	}
+}
+
+func getEndpointCompatibleRandomChannel(c *gin.Context, deps distributorDependencies, param *service.RetryParam) (*model.Channel, string, error) {
+	channel, selectGroup, err := deps.getRandomSatisfiedChannel(param)
+	if err != nil || channel == nil || channelSupportsRequestEndpoint(c, channel) {
+		return channel, selectGroup, err
+	}
+
+	candidates, err := deps.getEnabledChannelsForGroupModel(selectGroup, param.ModelName)
+	if err != nil {
+		return nil, selectGroup, err
+	}
+	for _, candidate := range candidates {
+		if candidate == nil || candidate.Status != common.ChannelStatusEnabled {
+			continue
+		}
+		if channelSupportsRequestEndpoint(c, candidate) {
+			return candidate, selectGroup, nil
+		}
+	}
+	return nil, selectGroup, nil
+}
+
+func channelSupportsRequestEndpoint(c *gin.Context, channel *model.Channel) bool {
+	if channel == nil {
+		return false
+	}
+	if channel.Type != constant.ChannelTypeMihuifang && channel.Type != constant.ChannelTypeFirefly {
+		return true
+	}
+
+	relayMode := relayconstant.RelayModeUnknown
+	if c != nil {
+		if rawMode, exists := c.Get("relay_mode"); exists {
+			if mode, ok := rawMode.(int); ok {
+				relayMode = mode
+			}
+		}
+		if relayMode == relayconstant.RelayModeUnknown && c.Request != nil && c.Request.URL != nil {
+			relayMode = relayconstant.Path2RelayMode(c.Request.URL.Path)
+		}
+	}
+
+	switch relayMode {
+	case relayconstant.RelayModeImagesGenerations,
+		relayconstant.RelayModeImagesEdits,
+		relayconstant.RelayModeAsyncImageSubmit,
+		relayconstant.RelayModeAsyncImageFetchByID:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -426,6 +513,9 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	c.Set("original_model", modelName) // for retry
 	if channel == nil {
 		return types.NewError(errors.New("channel is nil"), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+	}
+	if !channelSupportsRequestEndpoint(c, channel) {
+		return types.NewError(errors.New("the selected channel does not support this request endpoint"), types.ErrorCodeGetChannelFailed)
 	}
 	common.SetContextKey(c, constant.ContextKeyChannelId, channel.Id)
 	common.SetContextKey(c, constant.ContextKeyChannelName, channel.Name)

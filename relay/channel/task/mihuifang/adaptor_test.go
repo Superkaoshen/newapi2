@@ -997,6 +997,7 @@ func TestImageOneParseTaskResultCompletedURLSavedToOSS(t *testing.T) {
 
 func snapshotOSSOptions() map[string]string {
 	keys := []string{
+		"ImageStorageProvider",
 		"AliyunOssEnabled",
 		"AliyunOssEndpoint",
 		"AliyunOssBucket",
@@ -1004,6 +1005,15 @@ func snapshotOSSOptions() map[string]string {
 		"AliyunOssAccessKeySecret",
 		"AliyunOssPathPrefix",
 		"AliyunOssPublicBaseUrl",
+		"AliyunOssUploadTimeoutSeconds",
+		"R2Endpoint",
+		"R2Bucket",
+		"R2AccessKeyId",
+		"R2AccessKeySecret",
+		"R2PathPrefix",
+		"R2PublicBaseUrl",
+		"R2Region",
+		"R2UploadTimeoutSeconds",
 	}
 	out := make(map[string]string, len(keys))
 	common.OptionMapRWMutex.RLock()

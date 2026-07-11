@@ -160,7 +160,7 @@ func GetTaskAdaptor(platform constant.TaskPlatform) channel.TaskAdaptor {
 			return &taskGemini.TaskAdaptor{}
 		case constant.ChannelTypeMiniMax:
 			return &hailuo.TaskAdaptor{}
-		case constant.ChannelTypeMihuifang:
+		case constant.ChannelTypeMihuifang, constant.ChannelTypeFirefly:
 			return &taskmihuifang.TaskAdaptor{}
 		}
 	}

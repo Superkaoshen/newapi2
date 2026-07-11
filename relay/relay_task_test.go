@@ -111,6 +111,17 @@ func TestFilterAsyncImageSubmitChannelsDoesNotInferProviderFromMappedModelName(t
 	}
 }
 
+func TestFilterAsyncImageSubmitChannelsKeepsFirefly(t *testing.T) {
+	mapping := `{"gemini-3-pro-image":"nanobananapro"}`
+	firefly := testAsyncImageChannel(3, constant.ChannelTypeFirefly, 0, 1)
+	firefly.ModelMapping = &mapping
+
+	channels := filterAsyncImageSubmitChannels([]*model.Channel{firefly}, "gemini-3-pro-image")
+	if len(channels) != 1 || channels[0].Id != firefly.Id {
+		t.Fatalf("channels = %#v, want Firefly channel %d", channelIDs(channels), firefly.Id)
+	}
+}
+
 func TestFilterAsyncImageSubmitChannelsKeepsGeminiImageModels(t *testing.T) {
 	geminiMapping := `{"public-image":"gemini-3-pro-image-preview"}`
 	gemini := testAsyncImageChannel(1, constant.ChannelTypeGemini, 0, 1)

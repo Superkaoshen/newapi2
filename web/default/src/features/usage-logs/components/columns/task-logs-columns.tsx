@@ -43,7 +43,7 @@ import {
   createProgressColumn,
 } from './column-helpers'
 
-const IMAGE_TASK_PLATFORMS = new Set(['58'])
+const IMAGE_TASK_PLATFORMS = new Set(['58', '59'])
 const VIDEO_TASK_PLATFORMS = new Set([
   'kling',
   'runway',
@@ -64,6 +64,8 @@ const TASK_PLATFORM_LABELS: Record<string, string> = {
   '54': 'DoubaoVideo',
   '55': 'Sora',
   '58': 'Mihuifang',
+  // Firefly is an internal upstream implementation of the Mihuifang protocol.
+  '59': 'Mihuifang',
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

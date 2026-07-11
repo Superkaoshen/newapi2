@@ -29,14 +29,16 @@ import (
 
 type TaskAdaptor struct {
 	taskcommon.BaseBilling
-	ChannelType int
-	apiKey      string
-	baseURL     string
+	ChannelType     int
+	apiKey          string
+	baseURL         string
+	initialTaskInfo *relaycommon.TaskInfo
 }
 
 const (
 	imageTaskProtocolAIAPIPro = "aiapipro"
 	imageTaskProtocolImageOne = "imageone"
+	imageTaskProtocolFirefly  = "firefly"
 	imageOneImageLimit        = 5
 )
 
@@ -84,6 +86,7 @@ func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 	a.ChannelType = info.ChannelType
 	a.baseURL = info.ChannelBaseUrl
 	a.apiKey = info.ApiKey
+	a.initialTaskInfo = nil
 }
 
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskError {
@@ -96,6 +99,16 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	}
 	if strings.TrimSpace(req.Model) == "" {
 		return service.TaskErrorWrapperLocal(fmt.Errorf("model field is required"), "missing_model", http.StatusBadRequest)
+	}
+	if mihuifangImageProtocol(info) == imageTaskProtocolFirefly {
+		if req.OutputPSD != nil && *req.OutputPSD {
+			return service.TaskErrorWrapperLocal(fmt.Errorf("output_psd is not supported by this image channel"), "unsupported_output_psd", http.StatusBadRequest)
+		}
+		info.Action = constant.TaskActionTextGenerate
+		if req.HasImage() || info.RelayMode == relayconstant.RelayModeImagesEdits || strings.Contains(c.Request.URL.Path, "/images/edits") {
+			info.Action = constant.TaskActionGenerate
+		}
+		return nil
 	}
 	if info.RelayMode == relayconstant.RelayModeImagesEdits || strings.Contains(c.Request.URL.Path, "/images/edits") {
 		info.Action = constant.TaskActionGenerate
@@ -110,7 +123,15 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 	if err != nil {
 		return nil
 	}
-	priceRatio := imageTierPriceRatio(info.OriginModelName, info.UpstreamModelName, req)
+	tierKey := imageTierPriceKey(req, info.UpstreamModelName)
+	if mihuifangImageProtocol(info) == imageTaskProtocolFirefly {
+		spec, err := resolveFireflyModelSpec(info.UpstreamModelName, req)
+		if err != nil {
+			return nil
+		}
+		tierKey = fireflyTierPriceKey(spec)
+	}
+	priceRatio := imageTierPriceRatioForKey(info.OriginModelName, info.UpstreamModelName, tierKey)
 	return map[string]float64{
 		"price_tier": priceRatio,
 		"n":          imageCountRatio(req.N),
@@ -126,6 +147,13 @@ func (a *TaskAdaptor) ValidateBilling(c *gin.Context, info *relaycommon.RelayInf
 		return fmt.Errorf("model price is required for %s", info.OriginModelName)
 	}
 	tierKey := imageTierPriceKey(req, info.UpstreamModelName)
+	if mihuifangImageProtocol(info) == imageTaskProtocolFirefly {
+		spec, err := resolveFireflyModelSpec(info.UpstreamModelName, req)
+		if err != nil {
+			return errors.New(sanitizeFireflyText(err.Error(), info.OriginModelName))
+		}
+		tierKey = fireflyTierPriceKey(spec)
+	}
 	if _, ok := lookupConfiguredModelPrice(modelTierPriceCandidates(tierKey, info.OriginModelName, info.UpstreamModelName)...); !ok {
 		return fmt.Errorf("model price is required for %s", info.OriginModelName+tierKey)
 	}
@@ -145,6 +173,9 @@ func (a *TaskAdaptor) ResolveBillingModelName(info *relaycommon.RelayInfo) strin
 }
 
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if mihuifangImageProtocol(info) == imageTaskProtocolFirefly {
+		return strings.TrimRight(a.baseURL, "/") + "/v1/chat/completions", nil
+	}
 	if mihuifangImageProtocol(info) == imageTaskProtocolImageOne {
 		return strings.TrimRight(a.baseURL, "/") + "/v1/images/edits", nil
 	}
@@ -157,7 +188,9 @@ func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, erro
 
 func (a *TaskAdaptor) BuildRequestHeader(c *gin.Context, req *http.Request, info *relaycommon.RelayInfo) error {
 	req.Header.Set("Authorization", "Bearer "+a.apiKey)
-	if contentType := c.Request.Header.Get("Content-Type"); strings.HasPrefix(contentType, "multipart/form-data") {
+	if mihuifangImageProtocol(info) == imageTaskProtocolFirefly {
+		req.Header.Set("Content-Type", "application/json")
+	} else if contentType := c.Request.Header.Get("Content-Type"); strings.HasPrefix(contentType, "multipart/form-data") {
 		req.Header.Set("Content-Type", contentType)
 	} else {
 		req.Header.Set("Content-Type", "application/json")
@@ -172,6 +205,13 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		return nil, err
 	}
 	upstreamModel := normalizeMihuifangModel(info.UpstreamModelName)
+	if mihuifangImageProtocol(info) == imageTaskProtocolFirefly {
+		body, err := buildFireflyRequestBody(c, upstreamModel, req)
+		if err != nil {
+			return nil, errors.New(sanitizeFireflyText(err.Error(), info.OriginModelName))
+		}
+		return body, nil
+	}
 	if mihuifangImageProtocol(info) == imageTaskProtocolImageOne {
 		return buildImageOneRequestBody(c, upstreamModel, req)
 	}
@@ -213,7 +253,11 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 }
 
 func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Response, error) {
-	return channel.DoTaskApiRequest(a, c, info, requestBody)
+	resp, err := channel.DoTaskApiRequest(a, c, info, requestBody)
+	if err != nil || resp == nil || mihuifangImageProtocol(info) != imageTaskProtocolFirefly || isHTTPStatusSuccess(resp.StatusCode) {
+		return resp, err
+	}
+	return sanitizeFireflyErrorResponse(resp, info.OriginModelName), nil
 }
 
 func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (string, []byte, *dto.TaskError) {
@@ -222,6 +266,9 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 		return "", nil, service.TaskErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
 	_ = resp.Body.Close()
+	if mihuifangImageProtocol(info) == imageTaskProtocolFirefly {
+		return a.doFireflyResponse(c, responseBody, info)
+	}
 
 	if mihuifangImageProtocol(info) == imageTaskProtocolImageOne {
 		return a.doImageOneResponse(c, responseBody, info)
@@ -280,6 +327,9 @@ func (a *TaskAdaptor) doImageOneResponse(c *gin.Context, responseBody []byte, in
 }
 
 func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy string) (*http.Response, error) {
+	if taskBodyImageProtocol(body) == imageTaskProtocolFirefly {
+		return nil, fmt.Errorf("synchronous image tasks complete during submission")
+	}
 	taskID, ok := body["task_id"].(string)
 	if !ok || strings.TrimSpace(taskID) == "" {
 		return nil, fmt.Errorf("invalid task_id")
@@ -304,6 +354,10 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 }
 
 func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
+	var fireflyProbe fireflyChatResponse
+	if err := common.Unmarshal(respBody, &fireflyProbe); err == nil && (fireflyProbe.ID != "" || len(fireflyProbe.Choices) > 0) {
+		return nil, fmt.Errorf("synchronous image tasks complete during submission")
+	}
 	if isImageOneTaskResponse(respBody) {
 		return parseImageOneTaskResult(respBody)
 	}
@@ -522,11 +576,18 @@ func imageOneProgress(status string) int {
 }
 
 func (a *TaskAdaptor) GetModelList() []string {
+	if a.ChannelType == constant.ChannelTypeFirefly {
+		return FireflyModelList
+	}
 	return ModelList
 }
 
 func (a *TaskAdaptor) GetChannelName() string {
 	return ChannelName
+}
+
+func (a *TaskAdaptor) InitialTaskInfo() *relaycommon.TaskInfo {
+	return a.initialTaskInfo
 }
 
 func isSuccessStatus(status string) bool {
@@ -552,7 +613,18 @@ func normalizeMihuifangModel(modelName string) string {
 }
 
 func mihuifangModelFamily(modelName string) string {
-	switch normalizeMihuifangModel(modelName) {
+	normalized := normalizeMihuifangModel(modelName)
+	switch {
+	case normalized == "firefly-nano-banana-pro", strings.HasPrefix(normalized, "firefly-nano-banana-pro-"):
+		return "nanobananapro"
+	case normalized == "firefly-nano-banana2", strings.HasPrefix(normalized, "firefly-nano-banana2-"):
+		return "nanobanana2"
+	case normalized == "firefly-nano-banana", strings.HasPrefix(normalized, "firefly-nano-banana-"):
+		return "nanobanana"
+	case normalized == "firefly-gpt-image", strings.HasPrefix(normalized, "firefly-gpt-image-"):
+		return "gpt-image-2"
+	}
+	switch normalized {
 	case "nanobanana-5":
 		return "nanobanana"
 	case "nanobanana2-5":
@@ -560,13 +632,16 @@ func mihuifangModelFamily(modelName string) string {
 	case "nanobananapro-5":
 		return "nanobananapro"
 	default:
-		return normalizeMihuifangModel(modelName)
+		return normalized
 	}
 }
 
 func mihuifangImageProtocol(info *relaycommon.RelayInfo) string {
 	if info == nil {
 		return imageTaskProtocolAIAPIPro
+	}
+	if info.ChannelType == constant.ChannelTypeFirefly {
+		return imageTaskProtocolFirefly
 	}
 	protocol := strings.ToLower(strings.TrimSpace(info.ChannelOtherSettings.ImageTaskProtocol))
 	if protocol == "" {
@@ -1325,12 +1400,19 @@ func applySavedImages(resp aiAPIProTaskResponse, saved []string) aiAPIProTaskRes
 			if !ok {
 				continue
 			}
-			if _, ok := itemMap["url"].(string); !ok {
-				continue
-			}
 			if savedIndex >= len(saved) {
 				break
 			}
+			_, hasURL := itemMap["url"].(string)
+			_, hasB64JSON := itemMap["b64_json"].(string)
+			_, hasBase64 := itemMap["base64"].(string)
+			_, hasData := itemMap["data"].(string)
+			if !hasURL && !hasB64JSON && !hasBase64 && !hasData {
+				continue
+			}
+			delete(itemMap, "b64_json")
+			delete(itemMap, "base64")
+			delete(itemMap, "data")
 			itemMap["url"] = saved[savedIndex]
 			items[i] = itemMap
 			savedIndex++
@@ -1442,11 +1524,14 @@ func imageQualityRatio(modelName, quality string) float64 {
 }
 
 func imageTierPriceRatio(originModel, upstreamModel string, req relaycommon.TaskSubmitReq) float64 {
+	return imageTierPriceRatioForKey(originModel, upstreamModel, imageTierPriceKey(req, upstreamModel))
+}
+
+func imageTierPriceRatioForKey(originModel, upstreamModel, tierKey string) float64 {
 	basePrice, ok := lookupConfiguredModelPrice(modelPriceCandidates(originModel, upstreamModel)...)
 	if !ok || basePrice <= 0 {
 		return 1
 	}
-	tierKey := imageTierPriceKey(req, upstreamModel)
 	tierPrice, ok := lookupConfiguredModelPrice(modelTierPriceCandidates(tierKey, originModel, upstreamModel)...)
 	if !ok || tierPrice <= 0 {
 		return 1
@@ -1454,10 +1539,32 @@ func imageTierPriceRatio(originModel, upstreamModel string, req relaycommon.Task
 	return tierPrice / basePrice
 }
 
+func fireflyTierPriceKey(spec fireflyModelSpec) string {
+	if spec.Family == "gpt-image-2" {
+		switch spec.Tier {
+		case "2k":
+			return "@medium"
+		case "4k":
+			return "@high"
+		default:
+			return "@low"
+		}
+	}
+	return "@" + spec.Tier
+}
+
 func imageTierPriceKey(req relaycommon.TaskSubmitReq, upstreamModel string) string {
 	modelFamily := mihuifangModelFamily(upstreamModel)
 	if modelFamily == "gpt-image-2" {
 		quality := strings.ToLower(strings.TrimSpace(req.Quality))
+		if quality == "" {
+			switch fireflyModelTier(upstreamModel) {
+			case "2k":
+				quality = "medium"
+			case "4k":
+				quality = "high"
+			}
+		}
 		if quality == "" {
 			quality = "low"
 		}
@@ -1466,6 +1573,11 @@ func imageTierPriceKey(req relaycommon.TaskSubmitReq, upstreamModel string) stri
 			parts = append(parts, "psd")
 		}
 		return "@" + strings.Join(parts, "@")
+	}
+	if strings.TrimSpace(req.Size) == "" && strings.TrimSpace(req.Resolution) == "" {
+		if tier := fireflyModelTier(upstreamModel); tier != "" {
+			return "@" + tier
+		}
 	}
 	return "@" + imageSizeTier(req.Size, req.Resolution)
 }

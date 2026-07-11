@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -88,12 +89,42 @@ func init() {
 			OwnedBy: "midjourney",
 		})
 	}
+	registeredModelNames := make(map[string]struct{}, len(openAIModels))
+	for _, aiModel := range openAIModels {
+		registeredModelNames[aiModel.Id] = struct{}{}
+	}
+	for _, channelType := range []int{constant.ChannelTypeMihuifang, constant.ChannelTypeFirefly} {
+		taskAdaptor := relay.GetTaskAdaptor(constant.TaskPlatform(strconv.Itoa(channelType)))
+		if taskAdaptor == nil {
+			continue
+		}
+		taskAdaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelType: channelType}})
+		for _, modelName := range taskAdaptor.GetModelList() {
+			if _, exists := registeredModelNames[modelName]; exists {
+				continue
+			}
+			openAIModels = append(openAIModels, dto.OpenAIModels{
+				Id:      modelName,
+				Object:  "model",
+				Created: 1626777600,
+				OwnedBy: taskAdaptor.GetChannelName(),
+			})
+			registeredModelNames[modelName] = struct{}{}
+		}
+	}
 	openAIModelsMap = make(map[string]dto.OpenAIModels)
 	for _, aiModel := range openAIModels {
 		openAIModelsMap[aiModel.Id] = aiModel
 	}
 	channelId2Models = make(map[int][]string)
 	for i := 1; i <= constant.ChannelTypeDummy; i++ {
+		if i == constant.ChannelTypeMihuifang || i == constant.ChannelTypeFirefly {
+			taskAdaptor := relay.GetTaskAdaptor(constant.TaskPlatform(strconv.Itoa(i)))
+			meta := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelType: i}}
+			taskAdaptor.Init(meta)
+			channelId2Models[i] = taskAdaptor.GetModelList()
+			continue
+		}
 		apiType, success := common.ChannelType2APIType(i)
 		if !success || apiType == constant.APITypeAIProxyLibrary {
 			continue
@@ -111,6 +142,13 @@ func init() {
 }
 
 func channelOwnerName(channelType int) string {
+	if channelType == constant.ChannelTypeMihuifang || channelType == constant.ChannelTypeFirefly {
+		taskAdaptor := relay.GetTaskAdaptor(constant.TaskPlatform(strconv.Itoa(channelType)))
+		taskAdaptor.Init(&relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelType: channelType}})
+		if name := strings.TrimSpace(taskAdaptor.GetChannelName()); name != "" {
+			return name
+		}
+	}
 	apiType, success := common.ChannelType2APIType(channelType)
 	if !success {
 		return strings.ToLower(constant.GetChannelTypeName(channelType))

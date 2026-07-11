@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -53,6 +54,7 @@ const (
 	objectStorageProviderDisabled     = "disabled"
 	objectStorageProviderAliyunOSS    = "aliyun_oss"
 	objectStorageProviderCloudflareR2 = "cloudflare_r2"
+	trustedImageDownloadTimeout       = 30 * time.Second
 )
 
 func getImageStorageProviderLocked() string {
@@ -204,6 +206,12 @@ func StrictSaveFileURLToAliyunOSS(rawURL string, upstreamBaseURL string) (string
 	return strictSaveURLToObjectStorage(rawURL, upstreamBaseURL, false)
 }
 
+// StrictSaveTrustedImageURLToAliyunOSS permits private-network downloads only
+// when the image URL is same-origin with the configured upstream base URL.
+func StrictSaveTrustedImageURLToAliyunOSS(rawURL string, upstreamBaseURL string) (string, error) {
+	return strictSaveTrustedURLToObjectStorage(rawURL, upstreamBaseURL, true)
+}
+
 func strictSaveURLToObjectStorage(rawURL string, upstreamBaseURL string, requireImage bool) (string, error) {
 	switch GetImageStorageProvider() {
 	case objectStorageProviderAliyunOSS:
@@ -221,6 +229,95 @@ func strictSaveURLToObjectStorage(rawURL string, upstreamBaseURL string, require
 	default:
 		return "", fmt.Errorf("aliyun oss or cloudflare r2 is not enabled or configured")
 	}
+}
+
+func strictSaveTrustedURLToObjectStorage(rawURL string, upstreamBaseURL string, requireImage bool) (string, error) {
+	provider := GetImageStorageProvider()
+	var aliyunCfg AliyunOssConfig
+	var r2Cfg R2Config
+	switch provider {
+	case objectStorageProviderAliyunOSS:
+		aliyunCfg = GetAliyunOssConfig()
+		if !aliyunCfg.IsEnabledAndValid() {
+			return "", fmt.Errorf("aliyun oss or cloudflare r2 is not enabled or configured")
+		}
+	case objectStorageProviderCloudflareR2:
+		r2Cfg = GetR2Config()
+		if !r2Cfg.IsEnabledAndValid() {
+			return "", fmt.Errorf("aliyun oss or cloudflare r2 is not enabled or configured")
+		}
+	default:
+		return "", fmt.Errorf("aliyun oss or cloudflare r2 is not enabled or configured")
+	}
+
+	resolvedURL, err := resolveImageURL(rawURL, upstreamBaseURL)
+	if err != nil {
+		return "", err
+	}
+	if err := validateSameOriginURL(resolvedURL, upstreamBaseURL); err != nil {
+		return "", err
+	}
+	var data []byte
+	var contentType string
+	if isExplicitPrivateUpstreamHost(upstreamBaseURL) {
+		data, contentType, err = downloadTrustedURLBytes(resolvedURL, requireImage)
+	} else {
+		data, contentType, err = downloadURLBytes(resolvedURL, requireImage)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	switch provider {
+	case objectStorageProviderAliyunOSS:
+		objectKey := buildAliyunOssObjectKeyWithFallback(aliyunCfg.PathPrefix, contentType, extensionFromURL(resolvedURL))
+		if err := uploadBytesToAliyunOSS(aliyunCfg, objectKey, data, contentType); err != nil {
+			return "", err
+		}
+		return buildAliyunOssPublicURL(aliyunCfg, objectKey)
+	case objectStorageProviderCloudflareR2:
+		objectKey := buildAliyunOssObjectKeyWithFallback(r2Cfg.PathPrefix, contentType, extensionFromURL(resolvedURL))
+		if err := uploadBytesToR2(r2Cfg, objectKey, data, contentType); err != nil {
+			return "", err
+		}
+		return buildR2PublicURL(r2Cfg, objectKey)
+	default:
+		return "", fmt.Errorf("aliyun oss or cloudflare r2 is not enabled or configured")
+	}
+}
+
+func isExplicitPrivateUpstreamHost(upstreamBaseURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(upstreamBaseURL))
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(parsed.Hostname())
+	return ip != nil && !ip.IsUnspecified() && common.IsPrivateIP(ip)
+}
+
+func validateSameOriginURL(rawURL, upstreamBaseURL string) error {
+	resultURL, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return err
+	}
+	baseURL, err := url.Parse(strings.TrimSpace(upstreamBaseURL))
+	if err != nil {
+		return err
+	}
+	if resultURL.Scheme == "" || resultURL.Host == "" || baseURL.Scheme == "" || baseURL.Host == "" {
+		return fmt.Errorf("trusted result URL and upstream base URL must be absolute")
+	}
+	if (!strings.EqualFold(resultURL.Scheme, "http") && !strings.EqualFold(resultURL.Scheme, "https")) ||
+		(!strings.EqualFold(baseURL.Scheme, "http") && !strings.EqualFold(baseURL.Scheme, "https")) {
+		return fmt.Errorf("trusted result URL must use HTTP or HTTPS")
+	}
+	if resultURL.User != nil || baseURL.User != nil {
+		return fmt.Errorf("trusted result URL must not contain user information")
+	}
+	if !strings.EqualFold(resultURL.Scheme, baseURL.Scheme) || !strings.EqualFold(resultURL.Host, baseURL.Host) {
+		return fmt.Errorf("result URL origin does not match upstream base URL")
+	}
+	return nil
 }
 
 func saveImageURLToR2WithConfig(cfg R2Config, rawURL string, upstreamBaseURL string) (string, error) {
@@ -305,7 +402,7 @@ func SaveBase64ImageToAliyunOSS(data string, contentType string) (string, error)
 	if len(imageBytes) == 0 {
 		return "", fmt.Errorf("decoded image is empty")
 	}
-	maxFileSize := int64(constant.MaxFileDownloadMB*1024*1024) + 1
+	maxFileSize := maxObjectStorageDownloadBytes() + 1
 	if int64(len(imageBytes)) >= maxFileSize {
 		return "", fmt.Errorf("image size exceeds maximum allowed size")
 	}
@@ -330,6 +427,14 @@ func SaveBase64ImageToAliyunOSS(data string, contentType string) (string, error)
 	default:
 		return "", nil
 	}
+}
+
+func maxObjectStorageDownloadBytes() int64 {
+	maxMB := constant.MaxFileDownloadMB
+	if maxMB <= 0 {
+		maxMB = 64
+	}
+	return int64(maxMB) * 1024 * 1024
 }
 
 func detectImageContentTypeFromBytes(data []byte) string {
@@ -406,12 +511,70 @@ func downloadURLBytes(originURL string, requireImage bool) ([]byte, string, erro
 		return nil, "", err
 	}
 	defer CloseResponseBodyGracefully(resp)
+	return readDownloadedURLResponse(resp, requireImage)
+}
 
+func downloadTrustedURLBytes(originURL string, requireImage bool) ([]byte, string, error) {
+	client := GetHttpClient()
+	if client == nil {
+		client = http.DefaultClient
+	}
+	trustedClient := *client
+	if transport, ok := trustedClient.Transport.(*http.Transport); ok && transport != nil {
+		directTransport := transport.Clone()
+		directTransport.Proxy = nil
+		trustedClient.Transport = directTransport
+	} else if defaultTransport, ok := http.DefaultTransport.(*http.Transport); ok {
+		directTransport := defaultTransport.Clone()
+		directTransport.Proxy = nil
+		trustedClient.Transport = directTransport
+	}
+	if trustedClient.Timeout <= 0 || trustedClient.Timeout > trustedImageDownloadTimeout {
+		trustedClient.Timeout = trustedImageDownloadTimeout
+	}
+	trustedClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) == 0 {
+			return nil
+		}
+		if err := validateSameOriginURL(req.URL.String(), via[0].URL.String()); err != nil {
+			return err
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		return nil
+	}
+	resp, err := trustedClient.Get(originURL)
+	if err != nil {
+		return nil, "", err
+	}
+	defer CloseResponseBodyGracefully(resp)
+	data, contentType, err := readDownloadedURLResponse(resp, requireImage)
+	if err != nil || !requireImage {
+		return data, contentType, err
+	}
+	detectedType := canonicalContentType(http.DetectContentType(data))
+	if !isTrustedRasterContentType(detectedType) {
+		return nil, "", fmt.Errorf("downloaded file is not a supported raster image, detected content-type=%s", detectedType)
+	}
+	return data, detectedType, nil
+}
+
+func isTrustedRasterContentType(contentType string) bool {
+	switch strings.ToLower(strings.TrimSpace(canonicalContentType(contentType))) {
+	case "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp":
+		return true
+	default:
+		return false
+	}
+}
+
+func readDownloadedURLResponse(resp *http.Response, requireImage bool) ([]byte, string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("download image failed with status %d", resp.StatusCode)
 	}
 
-	maxFileSize := int64(constant.MaxFileDownloadMB*1024*1024) + 1
+	maxFileSize := maxObjectStorageDownloadBytes() + 1
 	limitedReader := io.LimitReader(resp.Body, maxFileSize)
 	data, err := io.ReadAll(limitedReader)
 	if err != nil {
@@ -431,7 +594,6 @@ func downloadURLBytes(originURL string, requireImage bool) ([]byte, string, erro
 	if requireImage && !strings.HasPrefix(contentType, "image/") {
 		return nil, "", fmt.Errorf("downloaded file is not image, content-type=%s", contentType)
 	}
-
 	return data, contentType, nil
 }
 

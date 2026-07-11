@@ -276,7 +276,25 @@ func prepareTaskSubmission(c *gin.Context, info *relaycommon.RelayInfo) (*prepar
 		info.PublicTaskID = model.GenerateTaskID()
 	}
 
-	// 4. 价格计算：基础模型价格
+	// 4-6. 价格计算及适配器倍率估算。
+	if err := calculateTaskSubmissionPrice(c, info, adaptor, modelName); err != nil {
+		return nil, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest)
+	}
+
+	// 7. 预扣费（仅首次 — 重试时 info.Billing 已存在，跳过）
+	if info.Billing == nil && !info.PriceData.FreeModel {
+		info.ForcePreConsume = true
+		if apiErr := service.PreConsumeBilling(c, info.PriceData.Quota, info); apiErr != nil {
+			return nil, service.TaskErrorFromAPIError(apiErr)
+		}
+	}
+
+	return &preparedTaskSubmission{platform: platform, adaptor: adaptor}, nil
+}
+
+func calculateTaskSubmissionPrice(c *gin.Context, info *relaycommon.RelayInfo, adaptor channel.TaskAdaptor, modelName string) error {
+	// Resolve the configured price through the mapped model family while keeping
+	// OriginModelName public in task records and responses.
 	billingModelName := modelName
 	if resolver, ok := adaptor.(interface {
 		ResolveBillingModelName(info *relaycommon.RelayInfo) string
@@ -289,37 +307,25 @@ func prepareTaskSubmission(c *gin.Context, info *relaycommon.RelayInfo) (*prepar
 	priceData, err := helper.ModelPriceHelperPerCall(c, info)
 	info.OriginModelName = modelName
 	if err != nil {
-		return nil, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest)
+		return err
 	}
 	info.PriceData = priceData
 
-	// 5. 计费估算：让适配器根据用户请求提供 OtherRatios（时长、分辨率等）
-	//    必须在 ModelPriceHelperPerCall 之后调用（它会重建 PriceData）。
-	//    ResolveOriginTask 可能已在 remix 路径中预设了 OtherRatios，此处合并。
+	// EstimateBilling must run after ModelPriceHelperPerCall because the latter
+	// rebuilds PriceData.
 	if estimatedRatios := adaptor.EstimateBilling(c, info); len(estimatedRatios) > 0 {
-		for k, v := range estimatedRatios {
-			info.PriceData.AddOtherRatio(k, v)
+		for key, value := range estimatedRatios {
+			info.PriceData.AddOtherRatio(key, value)
 		}
 	}
-
-	// 6. 将 OtherRatios 应用到基础额度
 	if !common.StringsContains(constant.TaskPricePatches, modelName) {
-		for _, ra := range info.PriceData.OtherRatios {
-			if ra != 1.0 {
-				info.PriceData.Quota = int(float64(info.PriceData.Quota) * ra)
+		for _, ratio := range info.PriceData.OtherRatios {
+			if ratio != 1.0 {
+				info.PriceData.Quota = int(float64(info.PriceData.Quota) * ratio)
 			}
 		}
 	}
-
-	// 7. 预扣费（仅首次 — 重试时 info.Billing 已存在，跳过）
-	if info.Billing == nil && !info.PriceData.FreeModel {
-		info.ForcePreConsume = true
-		if apiErr := service.PreConsumeBilling(c, info.PriceData.Quota, info); apiErr != nil {
-			return nil, service.TaskErrorFromAPIError(apiErr)
-		}
-	}
-
-	return &preparedTaskSubmission{platform: platform, adaptor: adaptor}, nil
+	return nil
 }
 
 func CanQueueAsyncImageTask(c *gin.Context, info *relaycommon.RelayInfo) bool {
@@ -339,7 +345,7 @@ func CanQueueAsyncImageTask(c *gin.Context, info *relaycommon.RelayInfo) bool {
 	}
 
 	channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)
-	if channelType == constant.ChannelTypeMihuifang {
+	if channelType == constant.ChannelTypeMihuifang || channelType == constant.ChannelTypeFirefly {
 		return true
 	}
 	if channelType == constant.ChannelTypeGemini {
@@ -413,7 +419,8 @@ func RelayTaskEnqueue(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto
 	ratiosJSON, _ := common.Marshal(otherRatios)
 	c.Header("X-New-Api-Other-Ratios", string(ratiosJSON))
 	c.Writer.Header().Set("Content-Type", "application/json")
-	if taskgemini.IsImageTaskModel(task.Properties.UpstreamModelName) {
+	if task.Platform != constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeFirefly)) &&
+		taskgemini.IsImageTaskModel(task.Properties.UpstreamModelName) {
 		_, err = io.Copy(c.Writer, bytes.NewBuffer(taskgemini.ConvertStoredImageTask(task)))
 	} else {
 		_, err = io.Copy(c.Writer, bytes.NewBuffer(taskmihuifang.ConvertStoredTask(task)))
@@ -438,6 +445,9 @@ func taskBillingContext(info *relaycommon.RelayInfo) *model.TaskBillingContext {
 func relayImageProtocol(info *relaycommon.RelayInfo) string {
 	if info == nil {
 		return ""
+	}
+	if info.ChannelType == constant.ChannelTypeFirefly {
+		return "firefly"
 	}
 	return strings.TrimSpace(info.ChannelOtherSettings.ImageTaskProtocol)
 }
@@ -616,7 +626,8 @@ func asyncImageFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskRe
 	}
 
 	if originTask.SubmitState.IsPending() {
-		if taskgemini.IsImageTaskModel(originTask.Properties.UpstreamModelName) {
+		if originTask.Platform != constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeFirefly)) &&
+			taskgemini.IsImageTaskModel(originTask.Properties.UpstreamModelName) {
 			respBody = taskgemini.ConvertStoredImageTask(originTask)
 		} else {
 			respBody = taskmihuifang.ConvertStoredTask(originTask)
@@ -624,7 +635,8 @@ func asyncImageFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskRe
 		return
 	}
 
-	if taskgemini.IsImageTaskModel(originTask.Properties.UpstreamModelName) {
+	if originTask.Platform != constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeFirefly)) &&
+		taskgemini.IsImageTaskModel(originTask.Properties.UpstreamModelName) {
 		if !taskmihuifang.IsCompletedTask(originTask) {
 			_ = tryResumeGeminiImageTask(originTask)
 		}
@@ -672,7 +684,7 @@ func tryUpdateAsyncImageTask(task *model.Task) error {
 	if channelModel.Type == constant.ChannelTypeGemini && strings.TrimSpace(task.PrivateData.RequestBody) != "" {
 		return nil
 	}
-	if channelModel.Type != constant.ChannelTypeMihuifang {
+	if channelModel.Type != constant.ChannelTypeMihuifang && channelModel.Type != constant.ChannelTypeFirefly {
 		return nil
 	}
 	adaptor := GetTaskAdaptor(task.Platform)
@@ -925,6 +937,28 @@ func mapTaskStatusToSimple(status model.TaskStatus) string {
 }
 
 func TaskModel2Dto(task *model.Task) *dto.TaskDto {
+	return taskModel2Dto(task, false)
+}
+
+func TaskModel2AdminDto(task *model.Task) *dto.TaskDto {
+	return taskModel2Dto(task, true)
+}
+
+func taskModel2Dto(task *model.Task, includeUpstreamModel bool) *dto.TaskDto {
+	properties := task.Properties
+	failReason := task.FailReason
+	resultURL := task.GetResultURL()
+	data := task.Data
+	if !includeUpstreamModel {
+		properties.UpstreamModelName = ""
+		if task.Platform == constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeFirefly)) {
+			publicModel := properties.OriginModelName
+			failReason = taskmihuifang.SanitizePublicModelText(failReason, publicModel)
+			resultURL = taskmihuifang.SanitizePublicModelText(resultURL, publicModel)
+			data = append(data[:0:0], taskmihuifang.SanitizePublicModelJSON(data, publicModel)...)
+		}
+	}
+
 	return &dto.TaskDto{
 		ID:         task.ID,
 		CreatedAt:  task.CreatedAt,
@@ -937,14 +971,14 @@ func TaskModel2Dto(task *model.Task) *dto.TaskDto {
 		Quota:      task.Quota,
 		Action:     task.Action,
 		Status:     string(task.Status),
-		FailReason: task.FailReason,
-		ResultURL:  task.GetResultURL(),
+		FailReason: failReason,
+		ResultURL:  resultURL,
 		SubmitTime: task.SubmitTime,
 		StartTime:  task.StartTime,
 		FinishTime: task.FinishTime,
 		Progress:   task.Progress,
-		Properties: task.Properties,
+		Properties: properties,
 		Username:   task.Username,
-		Data:       task.Data,
+		Data:       data,
 	}
 }

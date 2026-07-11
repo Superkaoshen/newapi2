@@ -15,3 +15,10 @@ var ModelList = []string{
 }
 
 var ChannelName = "mihuifang"
+
+var FireflyModelList = []string{
+	"gpt-image-2",
+	"nanobanana",
+	"nanobanana2",
+	"nanobananapro",
+}

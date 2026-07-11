@@ -56,7 +56,8 @@ const (
 	ChannelTypeReplicate      = 56
 	ChannelTypeCodex          = 57
 	ChannelTypeMihuifang      = 58
-	ChannelTypeDummy          // this one is only for count, do not add any channel after this
+	ChannelTypeFirefly        = 59 // Internal chat-completions image upstream.
+	ChannelTypeDummy               // this one is only for count, do not add any channel after this
 
 )
 
@@ -120,6 +121,7 @@ var ChannelBaseURLs = []string{
 	"https://api.replicate.com",                 //56
 	"https://chatgpt.com",                       //57
 	"https://aiapipro.vip",                      //58
+	"http://127.0.0.1:6001",                     //59
 }
 
 var ChannelTypeNames = map[int]string{
@@ -178,6 +180,7 @@ var ChannelTypeNames = map[int]string{
 	ChannelTypeReplicate:      "Replicate",
 	ChannelTypeCodex:          "Codex",
 	ChannelTypeMihuifang:      "Mihuifang",
+	ChannelTypeFirefly:        "Firefly",
 }
 
 func GetChannelTypeName(channelType int) string {
