@@ -1495,6 +1495,8 @@
     "强制使用 AUTH LOGIN": "Force AUTH LOGIN",
     "强制将响应格式化为 OpenAI 标准格式（只适用于OpenAI渠道类型）": "Force format responses to OpenAI standard format (Only for OpenAI channel types)",
     "强制格式化": "Force format",
+    "强制保存生成图片": "Force save generated images",
+    "将生成图片保存到已配置的对象存储；关闭时直接返回上游图片 URL": "Save generated images to the configured object storage; when disabled, return upstream image URLs directly",
     "强制要求": "Mandatory requirement",
     "强变换": "Low Variation",
     "当上游通道返回错误中包含这些关键词时（不区分大小写），自动禁用通道": "When the upstream channel returns an error containing these keywords (not case-sensitive), automatically disable the channel",

@@ -1796,6 +1796,8 @@
     "Force a syntactically valid JSON response": "構文的に有効な JSON 応答を強制",
     "Force AUTH LOGIN": "AUTH LOGINを強制",
     "Force Format": "強制フォーマット",
+    "Force Save Generated Images": "生成画像を強制保存",
+    "Save generated images to the configured object storage; when disabled, return upstream image URLs directly": "生成画像を設定済みのオブジェクトストレージに保存します。無効の場合は、上流の画像 URL を直接返します",
     "Force format response to OpenAI standard (OpenAI channel only)": "応答をOpenAI標準に強制フォーマット (OpenAIチャンネルのみ)",
     "Force JSON object or schema-conforming output": "JSON オブジェクトまたはスキーマ準拠の出力を強制します",
     "Force SMTP authentication using AUTH LOGIN method": "AUTH LOGIN方式を使用してSMTP認証を強制する",

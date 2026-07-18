@@ -218,6 +218,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.thinking_to_content ||
     values.pass_through_body_enabled ||
     values.system_prompt_override ||
+    values.force_save_image ||
     values.claude_beta_query ||
     values.upstream_model_update_check_enabled ||
     values.upstream_model_update_auto_sync_enabled ||
@@ -3109,6 +3110,33 @@ export function ChannelMutateDrawer({
                       )}
 
                       <div className='divide-border space-y-0 divide-y border-y'>
+                        {currentType === 59 && (
+                          <FormField
+                            control={form.control}
+                            name='force_save_image'
+                            render={({ field }) => (
+                              <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                <div className='space-y-0.5'>
+                                  <FormLabel>
+                                    {t('Force Save Generated Images')}
+                                  </FormLabel>
+                                  <FormDescription>
+                                    {t(
+                                      'Save generated images to the configured object storage; when disabled, return upstream image URLs directly'
+                                    )}
+                                  </FormDescription>
+                                </div>
+                                <FormControl>
+                                  <Switch
+                                    checked={field.value}
+                                    onCheckedChange={field.onChange}
+                                  />
+                                </FormControl>
+                              </FormItem>
+                            )}
+                          />
+                        )}
+
                         {currentType === 1 && (
                           <FormField
                             control={form.control}

@@ -123,6 +123,7 @@ type TaskPrivateData struct {
 	ImageProtocol     string `json:"image_protocol,omitempty"`      // 图片任务提交时使用的上游协议
 	RequestBody       string `json:"request_body,omitempty"`        // 本地异步任务恢复所需的上游请求体
 	OriginalRequest   string `json:"original_request,omitempty"`    // 跨渠道重投所需的标准化任务请求
+	EphemeralInput    bool   `json:"ephemeral_input,omitempty"`     // 输入包含不允许持久化的 Base64、Data URI 或文件数据
 	RetryCount        int    `json:"retry_count,omitempty"`         // 跨渠道重投次数
 	TriedChannelIDs   []int  `json:"tried_channel_ids,omitempty"`   // 已尝试渠道，避免重复重投
 	LastFailureReason string `json:"last_failure_reason,omitempty"` // 最近一次上游失败原因
@@ -182,6 +183,7 @@ func (p TaskPrivateData) Value() (driver.Value, error) {
 		p.ImageProtocol == "" &&
 		p.RequestBody == "" &&
 		p.OriginalRequest == "" &&
+		!p.EphemeralInput &&
 		p.RetryCount == 0 &&
 		len(p.TriedChannelIDs) == 0 &&
 		p.LastFailureReason == "" &&
@@ -500,12 +502,14 @@ func (s taskSnapshot) Equal(other taskSnapshot) bool {
 func (t *Task) ClearTransientPrivateData() {
 	t.PrivateData.RequestBody = ""
 	t.PrivateData.OriginalRequest = ""
+	t.PrivateData.EphemeralInput = false
 	t.PrivateData.LastFailureReason = ""
 }
 
 func (t *Task) HasTransientPrivateData() bool {
 	return strings.TrimSpace(t.PrivateData.RequestBody) != "" ||
 		strings.TrimSpace(t.PrivateData.OriginalRequest) != "" ||
+		t.PrivateData.EphemeralInput ||
 		strings.TrimSpace(t.PrivateData.LastFailureReason) != ""
 }
 

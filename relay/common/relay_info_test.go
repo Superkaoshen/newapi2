@@ -38,3 +38,27 @@ func TestRelayInfoGetFinalRequestRelayFormatNilReceiver(t *testing.T) {
 	var info *RelayInfo
 	require.Equal(t, types.RelayFormat(""), info.GetFinalRequestRelayFormat())
 }
+
+func TestTaskSubmitReqHasEmbeddedImage(t *testing.T) {
+	tests := []struct {
+		name string
+		req  TaskSubmitReq
+		want bool
+	}{
+		{name: "empty", req: TaskSubmitReq{}, want: false},
+		{name: "remote image", req: TaskSubmitReq{Image: "https://cdn.example.com/input.png"}, want: false},
+		{name: "remote image list", req: TaskSubmitReq{Images: []string{"http://cdn.example.com/a.png", "https://cdn.example.com/b.png"}}, want: false},
+		{name: "data URI", req: TaskSubmitReq{Image: "data:image/png;base64,aGVsbG8="}, want: true},
+		{name: "raw base64", req: TaskSubmitReq{Image: "aGVsbG8="}, want: true},
+		{name: "relative path", req: TaskSubmitReq{ReferenceImages: []string{"/private/input.png"}}, want: true},
+		{name: "mask data URI", req: TaskSubmitReq{Mask: []byte(`"data:image/png;base64,aGVsbG8="`)}, want: true},
+		{name: "remote mask", req: TaskSubmitReq{Mask: []byte(`"https://cdn.example.com/mask.png"`)}, want: false},
+		{name: "invalid mask shape is ephemeral", req: TaskSubmitReq{Mask: []byte(`{"data":"aGVsbG8="}`)}, want: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.Equal(t, test.want, test.req.HasEmbeddedImage())
+		})
+	}
+}

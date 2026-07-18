@@ -617,11 +617,7 @@ func RelayTask(c *gin.Context) {
 			OriginModelName: relayInfo.OriginModelName,
 			PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
 		}
-		if req, reqErr := relaycommon.GetTaskRequest(c); reqErr == nil {
-			if data, marshalErr := common.Marshal(req); marshalErr == nil {
-				task.PrivateData.OriginalRequest = string(data)
-			}
-		}
+		setTaskOriginalRequest(c, task)
 		if relayInfo.ChannelId > 0 {
 			task.PrivateData.TriedChannelIDs = appendTaskTriedChannel(task.PrivateData.TriedChannelIDs, relayInfo.ChannelId)
 		}
@@ -640,6 +636,28 @@ func RelayTask(c *gin.Context) {
 
 	if taskErr != nil {
 		respondTaskError(c, taskErr)
+	}
+}
+
+func setTaskOriginalRequest(c *gin.Context, task *model.Task) {
+	if c == nil || task == nil {
+		return
+	}
+	req, err := relaycommon.GetTaskRequest(c)
+	if err != nil {
+		return
+	}
+	contentType := ""
+	if c.Request != nil {
+		contentType = strings.ToLower(c.GetHeader("Content-Type"))
+	}
+	if req.HasEmbeddedImage() || strings.HasPrefix(contentType, "multipart/form-data") {
+		task.PrivateData.EphemeralInput = true
+		return
+	}
+	data, err := common.Marshal(req)
+	if err == nil {
+		task.PrivateData.OriginalRequest = string(data)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -709,6 +710,53 @@ func (t *TaskSubmitReq) GetPrompt() string {
 
 func (t *TaskSubmitReq) HasImage() bool {
 	return strings.TrimSpace(t.Image) != "" || len(t.Images) > 0 || len(t.ReferenceImages) > 0 || len(t.ReferenceImageURLs) > 0
+}
+
+// HasEmbeddedImage reports whether the request contains image data that must
+// remain request-scoped. HTTP(S) references are safe to persist for durable
+// asynchronous retries; data URIs, raw base64 and other non-remote values are
+// not persisted.
+func (t *TaskSubmitReq) HasEmbeddedImage() bool {
+	if t == nil {
+		return false
+	}
+	inputs := make([]string, 0, 1+len(t.Images)+len(t.ReferenceImages)+len(t.ReferenceImageURLs))
+	inputs = append(inputs, t.Image)
+	inputs = append(inputs, t.Images...)
+	inputs = append(inputs, t.ReferenceImages...)
+	inputs = append(inputs, t.ReferenceImageURLs...)
+
+	if len(t.Mask) > 0 && string(t.Mask) != "null" {
+		var mask string
+		if err := common.Unmarshal(t.Mask, &mask); err == nil {
+			inputs = append(inputs, mask)
+		} else {
+			var masks []string
+			if err := common.Unmarshal(t.Mask, &masks); err != nil {
+				return true
+			}
+			inputs = append(inputs, masks...)
+		}
+	}
+
+	for _, input := range inputs {
+		if isEmbeddedImageInput(input) {
+			return true
+		}
+	}
+	return false
+}
+
+func isEmbeddedImageInput(input string) bool {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return false
+	}
+	parsed, err := url.Parse(input)
+	if err != nil || parsed.Host == "" {
+		return true
+	}
+	return !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")
 }
 
 func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {

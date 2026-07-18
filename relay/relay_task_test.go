@@ -3,11 +3,17 @@ package relay
 import (
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/gin-gonic/gin"
 )
 
 func TestIsHTTPSuccessStatusAcceptsAny2xx(t *testing.T) {
@@ -20,6 +26,56 @@ func TestIsHTTPSuccessStatusAcceptsAny2xx(t *testing.T) {
 		if isHTTPSuccessStatus(statusCode) {
 			t.Fatalf("isHTTPSuccessStatus(%d) = true, want false", statusCode)
 		}
+	}
+}
+
+func TestCanQueueAsyncImageTaskKeepsEmbeddedImagesRequestScoped(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		want        bool
+	}{
+		{
+			name:        "remote URL remains durable",
+			contentType: "application/json",
+			body:        `{"model":"nanobananapro","prompt":"edit","image":"https://cdn.example.com/input.png"}`,
+			want:        true,
+		},
+		{
+			name:        "data URI submits directly",
+			contentType: "application/json",
+			body:        `{"model":"nanobananapro","prompt":"edit","image":"data:image/png;base64,aGVsbG8="}`,
+			want:        false,
+		},
+		{
+			name:        "raw base64 submits directly",
+			contentType: "application/json",
+			body:        `{"model":"nanobananapro","prompt":"edit","images":["aGVsbG8="]}`,
+			want:        false,
+		},
+		{
+			name:        "multipart remains request scoped",
+			contentType: "multipart/form-data; boundary=test",
+			body:        "",
+			want:        false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/async/generations", strings.NewReader(test.body))
+			c.Request.Header.Set("Content-Type", test.contentType)
+			common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeFirefly)
+			defer common.CleanupBodyStorage(c)
+
+			info := &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeAsyncImageSubmit}
+			if got := CanQueueAsyncImageTask(c, info); got != test.want {
+				t.Fatalf("CanQueueAsyncImageTask() = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 

@@ -1796,6 +1796,8 @@
     "Force a syntactically valid JSON response": "Buộc phản hồi JSON hợp lệ về cú pháp",
     "Force AUTH LOGIN": "Bắt buộc AUTH LOGIN",
     "Force Format": "Buộc định dạng",
+    "Force Save Generated Images": "Bắt buộc lưu ảnh đã tạo",
+    "Save generated images to the configured object storage; when disabled, return upstream image URLs directly": "Lưu ảnh đã tạo vào kho lưu trữ đối tượng đã cấu hình; khi tắt, trả về trực tiếp URL ảnh từ thượng nguồn",
     "Force format response to OpenAI standard (OpenAI channel only)": "Buộc định dạng phản hồi theo tiêu chuẩn OpenAI (chỉ kênh OpenAI)",
     "Force JSON object or schema-conforming output": "Bắt buộc xuất JSON hoặc theo schema",
     "Force SMTP authentication using AUTH LOGIN method": "Bắt buộc xác thực SMTP sử dụng phương thức AUTH LOGIN",

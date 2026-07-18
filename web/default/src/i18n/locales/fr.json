@@ -1796,6 +1796,8 @@
     "Force a syntactically valid JSON response": "Imposer une réponse JSON syntaxiquement valide",
     "Force AUTH LOGIN": "Forcer AUTH LOGIN",
     "Force Format": "Forcer le format",
+    "Force Save Generated Images": "Forcer l’enregistrement des images générées",
+    "Save generated images to the configured object storage; when disabled, return upstream image URLs directly": "Enregistrer les images générées dans le stockage d’objets configuré ; si cette option est désactivée, renvoyer directement les URL des images en amont",
     "Force format response to OpenAI standard (OpenAI channel only)": "Forcer la réponse au format standard OpenAI (canal OpenAI uniquement)",
     "Force JSON object or schema-conforming output": "Forcer une sortie JSON ou conforme à un schéma",
     "Force SMTP authentication using AUTH LOGIN method": "Forcer l'authentification SMTP en utilisant la méthode AUTH LOGIN",

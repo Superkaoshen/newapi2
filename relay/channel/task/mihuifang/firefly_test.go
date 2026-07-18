@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -360,9 +361,10 @@ func TestDoFireflyResponseStoresImageAndHidesInternalModel(t *testing.T) {
 		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
 		OriginModelName: "gemini-3-pro-image",
 		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelType:       constant.ChannelTypeFirefly,
-			ChannelBaseUrl:    server.URL,
-			UpstreamModelName: "nanobananapro",
+			ChannelType:          constant.ChannelTypeFirefly,
+			ChannelBaseUrl:       server.URL,
+			UpstreamModelName:    "nanobananapro",
+			ChannelOtherSettings: dto.ChannelOtherSettings{ForceSaveImage: true},
 		},
 	}
 	adaptor := &TaskAdaptor{}
@@ -387,6 +389,46 @@ func TestDoFireflyResponseStoresImageAndHidesInternalModel(t *testing.T) {
 	initial := adaptor.InitialTaskInfo()
 	if initial == nil || initial.Status != model.TaskStatusSuccess || initial.Url == "" {
 		t.Fatalf("initial task info = %#v, want completed task", initial)
+	}
+}
+
+func TestDoFireflyResponseReturnsUpstreamURLWhenForceSaveDisabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	c.Set("task_request", relaycommon.TaskSubmitReq{N: 1})
+
+	const upstreamURL = "http://127.0.0.1:6001/generated/result.png"
+	info := &relaycommon.RelayInfo{
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+		OriginModelName: "gemini-3-pro-image",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:    constant.ChannelTypeFirefly,
+			ChannelBaseUrl: "http://127.0.0.1:6001",
+		},
+	}
+	adaptor := &TaskAdaptor{}
+	adaptor.Init(info)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			`{"choices":[{"message":{"content":"![Generated Image](` + upstreamURL + `)"}}]}`,
+		)),
+	}
+
+	_, taskData, taskErr := adaptor.DoResponse(c, resp, info)
+	if taskErr != nil {
+		t.Fatalf("DoResponse error = %v", taskErr)
+	}
+	for _, body := range []string{w.Body.String(), string(taskData)} {
+		if !strings.Contains(body, upstreamURL) {
+			t.Fatalf("public response missing upstream URL: %s", body)
+		}
+	}
+	initial := adaptor.InitialTaskInfo()
+	if initial == nil || initial.Url != upstreamURL {
+		t.Fatalf("initial task info = %#v, want URL %q", initial, upstreamURL)
 	}
 }
 
@@ -426,8 +468,9 @@ func TestFireflyResponseRejectsCrossOriginResultURL(t *testing.T) {
 		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
 		OriginModelName: "gemini-3-pro-image",
 		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelType:    constant.ChannelTypeFirefly,
-			ChannelBaseUrl: "http://127.0.0.1:6001",
+			ChannelType:          constant.ChannelTypeFirefly,
+			ChannelBaseUrl:       "http://127.0.0.1:6001",
+			ChannelOtherSettings: dto.ChannelOtherSettings{ForceSaveImage: true},
 		},
 	}
 	adaptor := &TaskAdaptor{}

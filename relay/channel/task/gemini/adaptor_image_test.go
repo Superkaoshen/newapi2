@@ -18,6 +18,18 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestShouldPersistAsyncImageRequestBodySkipsEphemeralInput(t *testing.T) {
+	if shouldPersistAsyncImageRequestBody(&model.Task{PrivateData: model.TaskPrivateData{EphemeralInput: true}}) {
+		t.Fatal("ephemeral image input must not be persisted in the Gemini request body")
+	}
+	if !shouldPersistAsyncImageRequestBody(&model.Task{}) {
+		t.Fatal("durable image task without a stored request body should be persisted")
+	}
+	if shouldPersistAsyncImageRequestBody(&model.Task{PrivateData: model.TaskPrivateData{RequestBody: "existing"}}) {
+		t.Fatal("existing request body must not be persisted again")
+	}
+}
+
 func TestBuildGeminiImageRequestBodyFromLegacyAsyncRequest(t *testing.T) {
 	req := relaycommon.TaskSubmitReq{
 		Prompt: "让这只猫戴上宇航员头盔",

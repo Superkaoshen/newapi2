@@ -564,48 +564,51 @@ func (a *TaskAdaptor) doFireflyResponse(c *gin.Context, responseBody []byte, inf
 			return "", nil, service.TaskErrorWrapper(err, "invalid_response", http.StatusBadGateway)
 		}
 	}
-	savedURLs := make([]string, 0, len(resultURLs))
-	for _, resultURL := range resultURLs {
-		savedURL, err := service.StrictSaveTrustedImageURLToAliyunOSS(resultURL, a.baseURL)
-		if err != nil {
-			common.SysError("save Firefly result image failed: " + err.Error())
-			return "", nil, service.TaskErrorWrapperLocal(fmt.Errorf("save result image failed"), "save_result_file_failed", http.StatusInternalServerError)
+	publicURLs := resultURLs
+	if info.ChannelOtherSettings.ForceSaveImage {
+		savedURLs := make([]string, 0, len(resultURLs))
+		for _, resultURL := range resultURLs {
+			savedURL, err := service.StrictSaveTrustedImageURLToAliyunOSS(resultURL, a.baseURL)
+			if err != nil {
+				common.SysError("save Firefly result image failed: " + err.Error())
+				return "", nil, service.TaskErrorWrapperLocal(fmt.Errorf("save result image failed"), "save_result_file_failed", http.StatusInternalServerError)
+			}
+			savedURLs = append(savedURLs, savedURL)
 		}
-		savedURLs = append(savedURLs, savedURL)
-	}
-	savedURLs = uniqueNonEmptyStrings(savedURLs)
-	if len(savedURLs) == 0 {
-		return "", nil, service.TaskErrorWrapper(fmt.Errorf("object storage returned no image URL"), "save_result_file_failed", http.StatusInternalServerError)
+		publicURLs = uniqueNonEmptyStrings(savedURLs)
+		if len(publicURLs) == 0 {
+			return "", nil, service.TaskErrorWrapper(fmt.Errorf("object storage returned no image URL"), "save_result_file_failed", http.StatusInternalServerError)
+		}
 	}
 
-	publicResponse := fireflyPublicTaskResponse(info, savedURLs)
+	publicResponse := fireflyPublicTaskResponse(info, publicURLs)
 	taskData := normalizeResponseData(publicResponse)
 	a.initialTaskInfo = &relaycommon.TaskInfo{
 		TaskID:   info.PublicTaskID,
 		Status:   model.TaskStatusSuccess,
 		Progress: taskcommon.ProgressComplete,
-		Url:      savedURLs[0],
+		Url:      publicURLs[0],
 		Data:     taskData,
 	}
 	c.JSON(http.StatusOK, publicResponse)
 	return firstNonEmpty(upstream.ID, info.PublicTaskID), taskData, nil
 }
 
-func fireflyPublicTaskResponse(info *relaycommon.RelayInfo, savedURLs []string) aiAPIProTaskResponse {
-	items := make([]interface{}, 0, len(savedURLs))
-	for _, savedURL := range savedURLs {
+func fireflyPublicTaskResponse(info *relaycommon.RelayInfo, resultURLs []string) aiAPIProTaskResponse {
+	items := make([]interface{}, 0, len(resultURLs))
+	for _, resultURL := range resultURLs {
 		items = append(items, map[string]interface{}{
-			"url":  savedURL,
+			"url":  resultURL,
 			"type": "image",
 		})
 	}
 	result := map[string]interface{}{
 		"items":     items,
-		"image_url": savedURLs[0],
-		"url":       savedURLs[0],
+		"image_url": resultURLs[0],
+		"url":       resultURLs[0],
 	}
-	if len(savedURLs) > 1 {
-		result["image_urls"] = savedURLs
+	if len(resultURLs) > 1 {
+		result["image_urls"] = resultURLs
 	}
 	return aiAPIProTaskResponse{
 		RequestID:     info.PublicTaskID,
@@ -613,9 +616,9 @@ func fireflyPublicTaskResponse(info *relaycommon.RelayInfo, savedURLs []string) 
 		Status:        "succeeded",
 		BillingStatus: "billed",
 		Progress:      100,
-		ResultCount:   len(savedURLs),
+		ResultCount:   len(resultURLs),
 		Result:        result,
-		URL:           savedURLs[0],
+		URL:           resultURLs[0],
 	}
 }
 

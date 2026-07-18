@@ -298,7 +298,7 @@ func (a *TaskAdaptor) RunTaskAfterInsert(task *model.Task) {
 	}
 	body := append([]byte(nil), a.asyncImageBody...)
 	info := a.asyncImageInfo
-	if strings.TrimSpace(task.PrivateData.RequestBody) == "" {
+	if shouldPersistAsyncImageRequestBody(task) {
 		task.PrivateData.RequestBody = base64.StdEncoding.EncodeToString(body)
 		err := model.DB.Model(&model.Task{}).
 			Where("id = ? AND status = ?", task.ID, task.Status).
@@ -308,6 +308,12 @@ func (a *TaskAdaptor) RunTaskAfterInsert(task *model.Task) {
 		}
 	}
 	go runGeminiImageTask(context.Background(), task.ID, body, info)
+}
+
+func shouldPersistAsyncImageRequestBody(task *model.Task) bool {
+	return task != nil &&
+		!task.PrivateData.EphemeralInput &&
+		strings.TrimSpace(task.PrivateData.RequestBody) == ""
 }
 
 type geminiImageTaskResponse struct {
