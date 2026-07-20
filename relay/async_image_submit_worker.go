@@ -25,8 +25,8 @@ const (
 	asyncImageSubmitBatchSize       = 100
 	asyncImageSubmitWindowSize      = 10
 	asyncImageSubmitInterval        = 2 * time.Second
-	asyncImageSubmitClaimTimeout    = 2 * time.Minute
-	asyncImageFireflySubmitTimeout  = 90 * time.Second
+	asyncImageSubmitClaimTimeout    = 6 * time.Minute
+	asyncImageFireflySubmitTimeout  = 5 * time.Minute
 	asyncImageSubmitCircuitDuration = 45 * time.Second
 	asyncImageSubmitMaxAttempts     = 10
 )
