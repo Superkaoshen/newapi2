@@ -27,6 +27,7 @@ const (
 	asyncImageSubmitInterval        = 2 * time.Second
 	asyncImageSubmitClaimTimeout    = 6 * time.Minute
 	asyncImageFireflySubmitTimeout  = 5 * time.Minute
+	asyncImageSubmitWorkerCount     = 100
 	asyncImageSubmitCircuitDuration = 45 * time.Second
 	asyncImageSubmitMaxAttempts     = 10
 )
@@ -42,9 +43,14 @@ var asyncImageSubmitCircuits = struct {
 
 func StartAsyncImageSubmitWorker() {
 	asyncImageSubmitWorkerOnce.Do(func() {
+		ctx := context.Background()
+		jobs := make(chan asyncImageSubmitJob)
 		workerID := asyncImageSubmitWorkerID()
-		go asyncImageSubmitWorkerLoop(context.Background(), workerID)
-		common.SysLog("async image submit worker started: " + workerID)
+		go asyncImageSubmitDispatcherLoop(ctx, workerID, jobs)
+		for i := 0; i < asyncImageSubmitWorkerCount; i++ {
+			go asyncImageSubmitWorkerLoop(ctx, fmt.Sprintf("%s-%d", workerID, i), jobs)
+		}
+		common.SysLog(fmt.Sprintf("async image submit worker pool started: %d workers", asyncImageSubmitWorkerCount))
 	})
 }
 
@@ -56,7 +62,13 @@ func asyncImageSubmitWorkerID() string {
 	return fmt.Sprintf("%s-%d", host, os.Getpid())
 }
 
-func asyncImageSubmitWorkerLoop(ctx context.Context, workerID string) {
+type asyncImageSubmitJob struct {
+	task      *model.Task
+	modelName string
+	scheduler *asyncImageSubmitGroupScheduler
+}
+
+func asyncImageSubmitDispatcherLoop(ctx context.Context, workerID string, jobs chan<- asyncImageSubmitJob) {
 	ticker := time.NewTicker(asyncImageSubmitInterval)
 	defer ticker.Stop()
 
@@ -67,7 +79,7 @@ func asyncImageSubmitWorkerLoop(ctx context.Context, workerID string) {
 					logger.LogError(ctx, fmt.Sprintf("async image submit worker panic: %v", r))
 				}
 			}()
-			runAsyncImageSubmitWorkerOnce(ctx, workerID)
+			runAsyncImageSubmitWorkerOnce(ctx, workerID, jobs)
 		}()
 
 		select {
@@ -78,7 +90,25 @@ func asyncImageSubmitWorkerLoop(ctx context.Context, workerID string) {
 	}
 }
 
-func runAsyncImageSubmitWorkerOnce(ctx context.Context, workerID string) {
+func asyncImageSubmitWorkerLoop(ctx context.Context, workerID string, jobs <-chan asyncImageSubmitJob) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job := <-jobs:
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.LogError(ctx, fmt.Sprintf("async image submit worker panic: %v", r))
+					}
+				}()
+				processQueuedAsyncImageSubmitTask(ctx, workerID, job.task, job.modelName, job.scheduler)
+			}()
+		}
+	}
+}
+
+func runAsyncImageSubmitWorkerOnce(ctx context.Context, workerID string, jobs chan<- asyncImageSubmitJob) {
 	now := time.Now()
 	if err := model.ResetExpiredSubmittingAsyncImageTasks(now.Add(-asyncImageSubmitClaimTimeout).Unix(), asyncImageSubmitBatchSize); err != nil {
 		logger.LogWarn(ctx, fmt.Sprintf("reset expired async image submitting tasks failed: %s", err.Error()))
@@ -100,7 +130,11 @@ func runAsyncImageSubmitWorkerOnce(ctx context.Context, workerID string) {
 		}
 		scheduler := newAsyncImageSubmitGroupScheduler(candidates, modelName)
 		for _, task := range groupTasks {
-			processQueuedAsyncImageSubmitTask(ctx, workerID, task, modelName, scheduler)
+			select {
+			case jobs <- asyncImageSubmitJob{task: task, modelName: modelName, scheduler: scheduler}:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
 }
@@ -169,11 +203,11 @@ func processQueuedAsyncImageSubmitTask(ctx context.Context, workerID string, tas
 		req.Model = modelName
 	}
 
-	submitCtx, cancelSubmit := asyncImageSubmitContext(ctx, ch.Type)
+	submitCtx, cancelSubmit := asyncImageSubmitContextForChannel(ctx, ch)
 	defer cancelSubmit()
 	result, info, submitErr := resubmitImageToChannel(submitCtx, task, req, modelName, ch)
 	if submitErr != nil {
-		if isFireflySubmitDeadlineExceeded(submitCtx, ch.Type) {
+		if isAsyncImageSubmitDeadlineExceeded(submitCtx, ch) {
 			reason := fmt.Sprintf("channel #%d submit timed out after %s", ch.Id, asyncImageFireflySubmitTimeout)
 			logger.LogWarn(ctx, fmt.Sprintf("async image task %s failed permanently: %s", task.TaskID, reason))
 			failAsyncImageSubmitTask(ctx, task, reason)
@@ -290,6 +324,31 @@ func asyncImageSubmitContext(parent context.Context, channelType int) (context.C
 	return context.WithTimeout(parent, asyncImageFireflySubmitTimeout)
 }
 
+func asyncImageSubmitContextForChannel(parent context.Context, channel *model.Channel) (context.Context, context.CancelFunc) {
+	if channel != nil && (channel.Type == constant.ChannelTypeFirefly || isMihuifangChatProtocol(channel)) {
+		if parent == nil {
+			parent = context.Background()
+		}
+		return context.WithTimeout(parent, asyncImageFireflySubmitTimeout)
+	}
+	if channel == nil {
+		return asyncImageSubmitContext(parent, 0)
+	}
+	return asyncImageSubmitContext(parent, channel.Type)
+}
+
+func isMihuifangChatProtocol(channel *model.Channel) bool {
+	if channel == nil || channel.Type != constant.ChannelTypeMihuifang {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(channel.GetOtherSettings().ImageTaskProtocol), "firefly")
+}
+
+func isAsyncImageSubmitDeadlineExceeded(ctx context.Context, channel *model.Channel) bool {
+	return channel != nil && ctx != nil && ctx.Err() == context.DeadlineExceeded &&
+		(channel.Type == constant.ChannelTypeFirefly || isMihuifangChatProtocol(channel))
+}
+
 func isFireflySubmitDeadlineExceeded(ctx context.Context, channelType int) bool {
 	return channelType == constant.ChannelTypeFirefly && ctx != nil && ctx.Err() == context.DeadlineExceeded
 }
@@ -360,6 +419,7 @@ func asyncImageSubmitBackoff(attempt int) time.Duration {
 }
 
 type asyncImageSubmitGroupScheduler struct {
+	mu        sync.Mutex
 	channels  []*model.Channel
 	modelName string
 	positions map[int64]int
@@ -384,6 +444,8 @@ func (s *asyncImageSubmitGroupScheduler) Next(now time.Time) *model.Channel {
 	if s == nil || len(s.channels) == 0 {
 		return nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, priority := range asyncImageSubmitPriorities(s.channels) {
 		available := make([]*model.Channel, 0)
 		for _, ch := range s.channels {

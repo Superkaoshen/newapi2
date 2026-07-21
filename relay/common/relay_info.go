@@ -712,10 +712,8 @@ func (t *TaskSubmitReq) HasImage() bool {
 	return strings.TrimSpace(t.Image) != "" || len(t.Images) > 0 || len(t.ReferenceImages) > 0 || len(t.ReferenceImageURLs) > 0
 }
 
-// HasEmbeddedImage reports whether the request contains image data that must
-// remain request-scoped. HTTP(S) references are safe to persist for durable
-// asynchronous retries; data URIs, raw base64 and other non-remote values are
-// not persisted.
+// HasEmbeddedImage reports whether the request contains embedded image data.
+// Callers may use this to choose an appropriate persistence or upload strategy.
 func (t *TaskSubmitReq) HasEmbeddedImage() bool {
 	if t == nil {
 		return false

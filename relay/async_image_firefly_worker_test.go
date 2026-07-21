@@ -45,6 +45,26 @@ func TestAsyncImageFireflySubmitContextExpiresBeforeClaim(t *testing.T) {
 	}
 }
 
+func TestMihuifangChatSubmitContextExpiresBeforeClaim(t *testing.T) {
+	otherSettings := `{"image_task_protocol":"firefly"}`
+	channel := &model.Channel{
+		Type:          constant.ChannelTypeMihuifang,
+		OtherSettings: otherSettings,
+	}
+
+	startedAt := time.Now()
+	ctx, cancel := asyncImageSubmitContextForChannel(context.Background(), channel)
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("Mihuifang Chat submit context has no deadline")
+	}
+	remaining := deadline.Sub(startedAt)
+	if remaining <= 0 || remaining > asyncImageFireflySubmitTimeout {
+		t.Fatalf("Mihuifang Chat submit deadline remaining = %s, want (0, %s]", remaining, asyncImageFireflySubmitTimeout)
+	}
+}
+
 func TestFireflySubmitDeadlineIsPermanentOnlyForFirefly(t *testing.T) {
 	expiredCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()

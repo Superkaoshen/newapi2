@@ -343,11 +343,6 @@ func CanQueueAsyncImageTask(c *gin.Context, info *relaycommon.RelayInfo) bool {
 	default:
 		return false
 	}
-	var req relaycommon.TaskSubmitReq
-	if err := common.UnmarshalBodyReusable(c, &req); err == nil && req.HasEmbeddedImage() {
-		return false
-	}
-
 	channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)
 	if channelType == constant.ChannelTypeMihuifang || channelType == constant.ChannelTypeFirefly {
 		return true
@@ -380,13 +375,6 @@ func RelayTaskEnqueue(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto
 	req, err := relaycommon.GetTaskRequest(c)
 	if err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
-	}
-	if req.HasEmbeddedImage() {
-		return service.TaskErrorWrapperLocal(
-			fmt.Errorf("embedded image input must be submitted without durable queue persistence"),
-			"embedded_image_requires_direct_submit",
-			http.StatusBadRequest,
-		)
 	}
 	originalRequest, err := common.Marshal(req)
 	if err != nil {

@@ -29,7 +29,7 @@ func TestIsHTTPSuccessStatusAcceptsAny2xx(t *testing.T) {
 	}
 }
 
-func TestCanQueueAsyncImageTaskKeepsEmbeddedImagesRequestScoped(t *testing.T) {
+func TestCanQueueAsyncImageTaskSupportsEmbeddedImages(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {
 		name        string
@@ -44,16 +44,16 @@ func TestCanQueueAsyncImageTaskKeepsEmbeddedImagesRequestScoped(t *testing.T) {
 			want:        true,
 		},
 		{
-			name:        "data URI submits directly",
+			name:        "data URI is queued",
 			contentType: "application/json",
 			body:        `{"model":"nanobananapro","prompt":"edit","image":"data:image/png;base64,aGVsbG8="}`,
-			want:        false,
+			want:        true,
 		},
 		{
-			name:        "raw base64 submits directly",
+			name:        "raw base64 is queued",
 			contentType: "application/json",
 			body:        `{"model":"nanobananapro","prompt":"edit","images":["aGVsbG8="]}`,
-			want:        false,
+			want:        true,
 		},
 		{
 			name:        "multipart remains request scoped",
